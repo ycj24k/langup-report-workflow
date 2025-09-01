@@ -96,7 +96,7 @@ class FileScanner:
         dates_to_check = [
             file_info['creation_date'],
             file_info['modification_date'],
-            file_info['access_date']
+            # file_info['access_date']
         ]
         
         for date_obj in dates_to_check:

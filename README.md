@@ -25,7 +25,7 @@
 install.bat
 
 # 或手动安装
-python3 -m pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ### 3. 配置数据库
@@ -47,7 +47,7 @@ DATABASE_CONFIG = {
 run.bat
 
 # 方式2: 命令行运行
-python3 main.py
+python main.py
 ```
 
 ## 项目结构
@@ -86,12 +86,12 @@ langup-report-workflow/
 
 ### 数据库连接测试
 ```bash
-python3 test_database.py
+python test_database.py
 ```
 
 ### 文件扫描测试
 ```bash
-python3 test_scan.py
+python test_scan.py
 ```
 
 ## 配置说明

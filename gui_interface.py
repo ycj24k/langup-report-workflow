@@ -5,13 +5,14 @@ GUI界面模块
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from tkinter.constants import *
 import ttkbootstrap as ttk_bs
 from ttkbootstrap.constants import *
 import pandas as pd
 from datetime import datetime
 import json
 import threading
-from config import FILE_CATEGORIES, IMPORTANCE_LEVELS
+from config import FILE_CATEGORIES, IMPORTANCE_LEVELS, PRESET_TAGS
 
 
 class ResearchFileGUI:
@@ -21,11 +22,26 @@ class ResearchFileGUI:
         self.root.geometry("1400x800")
         self.root.minsize(1200, 600)
         
+        # 样式优化：表头背景、边框、居中
+        self.style = ttk.Style()
+        try:
+            self.style.configure('Treeview.Heading', background='#E9F2FF', foreground='#333333', anchor='center')
+            self.style.configure('Treeview', rowheight=24, borderwidth=1, relief='solid')
+        except Exception:
+            pass
+        
         # 数据存储
         self.files_data = []
         self.filtered_data = []
         self.current_file_index = -1
         self.unsaved_changes = False
+        # 选择集（按 file_path 记录）
+        self.selected_paths = set()
+        
+        # 分页相关
+        self.current_page = 1
+        self.page_size = 100  # 每页显示100条数据
+        self.total_pages = 1
         
         # 回调函数
         self.on_file_scan = None
@@ -52,13 +68,7 @@ class ResearchFileGUI:
             command=self.scan_files
         )
         
-        # 导入按钮
-        self.import_btn = ttk_bs.Button(
-            self.toolbar_frame,
-            text="导入Excel",
-            bootstyle="secondary",
-            command=self.import_excel
-        )
+        
         
         # 导出按钮
         self.export_btn = ttk_bs.Button(
@@ -68,12 +78,12 @@ class ResearchFileGUI:
             command=self.export_excel
         )
         
-        # 上传按钮
+        # 上传按钮（上传已选择项）
         self.upload_btn = ttk_bs.Button(
             self.toolbar_frame,
-            text="上传到数据库",
+            text="上传到数据库(已选)",
             bootstyle="success",
-            command=self.upload_to_database
+            command=self.upload_selected_to_database
         )
         
         # 进度条
@@ -100,23 +110,69 @@ class ResearchFileGUI:
             padding=10
         )
         
-        # 搜索框
+        # 搜索和筛选框架
         self.search_frame = ttk_bs.Frame(self.left_frame)
-        ttk_bs.Label(self.search_frame, text="搜索:").pack(side=LEFT, padx=(0, 5))
+        
+        # 搜索框
+        search_label_frame = ttk_bs.Frame(self.search_frame)
+        search_label_frame.pack(fill=X, pady=(0, 5))
+        
+        ttk_bs.Label(search_label_frame, text="搜索:").pack(side=LEFT, padx=(0, 5))
         self.search_var = tk.StringVar()
-        self.search_var.trace('w', self.filter_files)
         self.search_entry = ttk_bs.Entry(
-            self.search_frame,
+            search_label_frame,
             textvariable=self.search_var,
             width=30
         )
         self.search_entry.pack(side=LEFT, fill=X, expand=True)
         
+        # 搜索/清空按钮
+        self.search_btn = ttk_bs.Button(
+            search_label_frame,
+            text="搜索",
+            bootstyle="primary",
+            command=lambda: self.apply_filters(reset_page=True)
+        )
+        self.search_btn.pack(side=LEFT, padx=(8, 4))
+        
+        self.clear_btn = ttk_bs.Button(
+            search_label_frame,
+            text="重置",
+            bootstyle="secondary",
+            command=self.clear_filters
+        )
+        self.clear_btn.pack(side=LEFT)
+        
+        # 状态筛选
+        filter_frame = ttk_bs.Frame(self.search_frame)
+        filter_frame.pack(fill=X)
+        
+        ttk_bs.Label(filter_frame, text="状态:").pack(side=LEFT, padx=(0, 5))
+        self.status_var = tk.StringVar(value="全部")
+        self.status_combo = ttk_bs.Combobox(
+            filter_frame,
+            textvariable=self.status_var,
+            values=["全部", "新增", "更新", "未变化"],
+            state="readonly",
+            width=10
+        )
+        self.status_combo.pack(side=LEFT, padx=(0, 10))
+        self.status_combo.bind('<<ComboboxSelected>>', self.on_status_filter_change)
+        
+        # 清空缓存按钮
+        self.clear_cache_btn = ttk_bs.Button(
+            filter_frame,
+            text="清空缓存",
+            bootstyle="danger",
+            command=self.clear_cache
+        )
+        self.clear_cache_btn.pack(side=RIGHT)
+        
         # 文件列表
         self.file_list_frame = ttk_bs.Frame(self.left_frame)
         
-        # 创建Treeview
-        columns = ("文件名", "大小(MB)", "修改时间", "分类", "重要性")
+        # 创建Treeview（新增“选择”列）
+        columns = ("选择", "文件名", "大小(MB)", "创建时间", "修改时间", "访问时间", "状态", "分类", "重要性")
         self.file_tree = ttk.Treeview(
             self.file_list_frame,
             columns=columns,
@@ -124,18 +180,24 @@ class ResearchFileGUI:
             height=20
         )
         
-        # 设置列宽
-        self.file_tree.column("#0", width=50, minwidth=50)
-        self.file_tree.column("文件名", width=250, minwidth=200)
-        self.file_tree.column("大小(MB)", width=80, minwidth=60)
-        self.file_tree.column("修改时间", width=120, minwidth=100)
-        self.file_tree.column("分类", width=100, minwidth=80)
-        self.file_tree.column("重要性", width=60, minwidth=50)
+        # 设置列宽与居中
+        self.file_tree.column("#0", width=60, minwidth=60, anchor=CENTER)
+        self.file_tree.column("选择", width=70, minwidth=60, anchor=CENTER)
+        self.file_tree.column("文件名", width=200, minwidth=140, anchor=CENTER)
+        self.file_tree.column("大小(MB)", width=90, minwidth=70, anchor=CENTER)
+        self.file_tree.column("创建时间", width=110, minwidth=90, anchor=CENTER)
+        self.file_tree.column("修改时间", width=110, minwidth=90, anchor=CENTER)
+        self.file_tree.column("访问时间", width=110, minwidth=90, anchor=CENTER)
+        self.file_tree.column("状态", width=80, minwidth=60, anchor=CENTER)
+        self.file_tree.column("分类", width=100, minwidth=80, anchor=CENTER)
+        self.file_tree.column("重要性", width=80, minwidth=60, anchor=CENTER)
         
         # 设置标题
-        self.file_tree.heading("#0", text="序号")
+        self.file_tree.heading("#0", text="序号", anchor=CENTER)
         for col in columns:
-            self.file_tree.heading(col, text=col)
+            self.file_tree.heading(col, text=col, anchor=CENTER)
+        # 表头“选择”列支持全选/反选
+        self.file_tree.heading("选择", command=self.toggle_select_all_current_page)
         
         # 滚动条
         self.tree_scroll = ttk.Scrollbar(
@@ -145,8 +207,9 @@ class ResearchFileGUI:
         )
         self.file_tree.configure(yscrollcommand=self.tree_scroll.set)
         
-        # 绑定选择事件
+        # 绑定选择/点击事件
         self.file_tree.bind('<<TreeviewSelect>>', self.on_file_select)
+        self.file_tree.bind('<Button-1>', self.on_tree_click)
         
         # 右侧详情区域
         self.right_frame = ttk_bs.LabelFrame(
@@ -154,6 +217,8 @@ class ResearchFileGUI:
             text="文件详情",
             padding=10
         )
+        # 设置固定宽度
+        self.right_frame.configure(width=500)
         
         # 文件信息区域
         self.info_frame = ttk_bs.LabelFrame(
@@ -198,16 +263,32 @@ class ResearchFileGUI:
         ttk_bs.Label(self.classify_frame, text="分类:").grid(
             row=0, column=0, sticky=W, padx=(0, 10), pady=5
         )
+        
+        # 分类输入框和按钮
+        category_frame = ttk_bs.Frame(self.classify_frame)
+        category_frame.grid(row=0, column=1, sticky=W, pady=5)
+        
         self.category_var = tk.StringVar()
         self.category_combo = ttk_bs.Combobox(
-            self.classify_frame,
+            category_frame,
             textvariable=self.category_var,
             values=FILE_CATEGORIES,
-            state="readonly",
-            width=20
+            state="normal",  # 改为normal以支持手动输入
+            width=18
         )
-        self.category_combo.grid(row=0, column=1, sticky=W, pady=5)
+        self.category_combo.pack(side=LEFT)
         self.category_combo.bind('<<ComboboxSelected>>', self.on_category_change)
+        self.category_combo.bind('<KeyRelease>', self.on_category_change)
+        
+        # 添加分类按钮
+        self.add_category_btn = ttk_bs.Button(
+            category_frame,
+            text="+",
+            bootstyle="secondary",
+            width=3,
+            command=self.add_category
+        )
+        self.add_category_btn.pack(side=LEFT, padx=(5, 0))
         
         # 重要性选择
         ttk_bs.Label(self.classify_frame, text="重要性:").grid(
@@ -224,18 +305,44 @@ class ResearchFileGUI:
         self.importance_combo.grid(row=1, column=1, sticky=W, pady=5)
         self.importance_combo.bind('<<ComboboxSelected>>', self.on_importance_change)
         
-        # 标签输入
+        # 标签选择
         ttk_bs.Label(self.classify_frame, text="标签:").grid(
             row=2, column=0, sticky=W+N, padx=(0, 10), pady=5
         )
+        
+        # 标签选择框架
+        tags_frame = ttk_bs.Frame(self.classify_frame)
+        tags_frame.grid(row=2, column=1, sticky=W, pady=5)
+        
+        # 标签输入框
         self.tags_var = tk.StringVar()
         self.tags_entry = ttk_bs.Entry(
-            self.classify_frame,
+            tags_frame,
             textvariable=self.tags_var,
-            width=30
+            width=25
         )
-        self.tags_entry.grid(row=2, column=1, sticky=W, pady=5)
+        self.tags_entry.pack(side=LEFT)
         self.tags_entry.bind('<KeyRelease>', self.on_tags_change)
+        
+        # 添加标签按钮
+        self.add_tag_btn = ttk_bs.Button(
+            tags_frame,
+            text="+",
+            bootstyle="secondary",
+            width=3,
+            command=self.add_tag
+        )
+        self.add_tag_btn.pack(side=LEFT, padx=(5, 0))
+        
+        # 标签选择按钮
+        self.select_tags_btn = ttk_bs.Button(
+            tags_frame,
+            text="选择",
+            bootstyle="info",
+            width=6,
+            command=self.show_tag_selector
+        )
+        self.select_tags_btn.pack(side=LEFT, padx=(5, 0))
         
         # 备注输入
         ttk_bs.Label(self.classify_frame, text="备注:").grid(
@@ -278,6 +385,83 @@ class ResearchFileGUI:
         )
         self.prev_btn.pack(side=LEFT)
         
+        # 分页控件
+        pagination_frame = ttk_bs.Frame(self.classify_frame)
+        pagination_frame.grid(row=5, column=0, columnspan=2, pady=10)
+        
+        ttk_bs.Label(pagination_frame, text="分页:").pack(side=LEFT, padx=(0, 5))
+        
+        self.page_var = tk.IntVar(value=1)
+        self.page_spinbox = ttk_bs.Spinbox(
+            pagination_frame,
+            from_=1,
+            to=1,
+            textvariable=self.page_var,
+            width=8,
+            command=self.on_page_change
+        )
+        self.page_spinbox.pack(side=LEFT, padx=(0, 5))
+        
+        ttk_bs.Label(pagination_frame, text="/").pack(side=LEFT, padx=(0, 5))
+        
+        self.total_pages_var = tk.StringVar(value="1")
+        ttk_bs.Label(pagination_frame, textvariable=self.total_pages_var).pack(side=LEFT, padx=(0, 10))
+        
+        # 每页条数选择
+        ttk_bs.Label(pagination_frame, text="每页:").pack(side=LEFT)
+        self.page_size_var = tk.StringVar(value=str(self.page_size))
+        self.page_size_combo = ttk_bs.Combobox(
+            pagination_frame,
+            textvariable=self.page_size_var,
+            values=["20", "50", "100"],
+            state="readonly",
+            width=5
+        )
+        self.page_size_combo.pack(side=LEFT, padx=(5, 10))
+        self.page_size_combo.bind('<<ComboboxSelected>>', self.on_page_size_change)
+        
+        self.prev_page_btn = ttk_bs.Button(
+            pagination_frame,
+            text="上一页",
+            bootstyle="secondary",
+            command=self.prev_page
+        )
+        self.prev_page_btn.pack(side=LEFT, padx=(0, 5))
+        
+        self.next_page_btn = ttk_bs.Button(
+            pagination_frame,
+            text="下一页",
+            bootstyle="secondary",
+            command=self.next_page
+        )
+        self.next_page_btn.pack(side=LEFT)
+        
+        # 选择/上传辅助按钮
+        self.select_all_btn = ttk_bs.Button(
+            pagination_frame,
+            text="全选本页",
+            bootstyle="info",
+            command=self.select_all_current_page
+        )
+        self.select_all_btn.pack(side=LEFT, padx=(20, 5))
+        
+        self.clear_select_btn = ttk_bs.Button(
+            pagination_frame,
+            text="清空选择",
+            bootstyle="secondary",
+            command=self.clear_selection_current_page
+        )
+        self.clear_select_btn.pack(side=LEFT)
+        
+        # 批量上传按钮（当前页已选）
+        self.batch_upload_btn = ttk_bs.Button(
+            pagination_frame,
+            text="批量上传(本页已选)",
+            bootstyle="warning",
+            command=self.batch_upload_current_page
+        )
+        self.batch_upload_btn.pack(side=LEFT, padx=(20, 0))
+        
         # 统计信息区域
         self.stats_frame = ttk_bs.LabelFrame(
             self.right_frame,
@@ -293,12 +477,12 @@ class ResearchFileGUI:
             state=tk.DISABLED
         )
         
-        stats_scroll = ttk.Scrollbar(
+        self.stats_scroll = ttk.Scrollbar(
             self.stats_frame,
             orient=VERTICAL,
             command=self.stats_text.yview
         )
-        self.stats_text.configure(yscrollcommand=stats_scroll.set)
+        self.stats_text.configure(yscrollcommand=self.stats_scroll.set)
         
     def setup_layout(self):
         """
@@ -311,7 +495,6 @@ class ResearchFileGUI:
         self.toolbar_frame.pack(fill=X, pady=(0, 10))
         
         self.scan_btn.pack(side=LEFT, padx=(0, 10))
-        self.import_btn.pack(side=LEFT, padx=(0, 10))
         self.export_btn.pack(side=LEFT, padx=(0, 10))
         self.upload_btn.pack(side=LEFT, padx=(0, 10))
         
@@ -331,14 +514,14 @@ class ResearchFileGUI:
         self.tree_scroll.pack(side=RIGHT, fill=Y)
         
         # 右侧详情区域
-        self.right_frame.pack(side=RIGHT, fill=Y, width=500)
+        self.right_frame.pack(side=RIGHT, fill=Y)
         
         self.info_frame.pack(fill=X, pady=(0, 10))
         self.classify_frame.pack(fill=X, pady=(0, 10))
         self.stats_frame.pack(fill=BOTH, expand=True)
         
         self.stats_text.pack(side=LEFT, fill=BOTH, expand=True)
-        stats_scroll.pack(side=RIGHT, fill=Y)
+        self.stats_scroll.pack(side=RIGHT, fill=Y)
         
     def set_callbacks(self, scan_callback=None, upload_callback=None):
         """
@@ -371,10 +554,14 @@ class ResearchFileGUI:
         """
         self.progress.stop()
         self.files_data = files
-        self.filtered_data = files.copy()
-        self.refresh_file_list()
+        # 默认状态：未变化（unchanged）
+        for f in self.files_data:
+            if not f.get('status'):
+                f['status'] = 'unchanged'
+        self.selected_paths.clear()
+        self.apply_filters(reset_page=True)
         self.update_statistics()
-        self.status_label.config(text=f"扫描完成，共找到 {len(files)} 个文件")
+        self.status_label.config(text=f"扫描完成，共找到 {len(files)} 个文件，共 {self.total_pages} 页")
     
     def on_scan_error(self, error_msg):
         """
@@ -384,26 +571,7 @@ class ResearchFileGUI:
         self.status_label.config(text="扫描失败")
         messagebox.showerror("错误", f"扫描文件时出错：{error_msg}")
     
-    def import_excel(self):
-        """
-        从Excel导入文件数据
-        """
-        file_path = filedialog.askopenfilename(
-            title="选择Excel文件",
-            filetypes=[("Excel files", "*.xlsx *.xls")]
-        )
-        
-        if file_path:
-            try:
-                df = pd.read_excel(file_path)
-                self.files_data = df.to_dict('records')
-                self.filtered_data = self.files_data.copy()
-                self.refresh_file_list()
-                self.update_statistics()
-                self.status_label.config(text=f"导入成功，共 {len(self.files_data)} 个文件")
-                messagebox.showinfo("成功", "Excel文件导入成功")
-            except Exception as e:
-                messagebox.showerror("错误", f"导入Excel文件失败：{e}")
+    
     
     def export_excel(self):
         """
@@ -428,33 +596,49 @@ class ResearchFileGUI:
             except Exception as e:
                 messagebox.showerror("错误", f"导出Excel文件失败：{e}")
     
-    def upload_to_database(self):
+    def upload_selected_to_database(self):
         """
-        上传到数据库
+        上传已选中的数据（全局，最多100条）
         """
         if not self.files_data:
             messagebox.showwarning("警告", "没有数据可上传")
             return
         
+        if not self.selected_paths:
+            messagebox.showwarning("警告", "请先在列表中勾选要上传的文件")
+            return
+        
+        # 汇总选择的数据（按 file_path 去重）
+        selected_records = [f for f in self.files_data if f.get('file_path') in self.selected_paths]
+        if not selected_records:
+            messagebox.showwarning("警告", "未找到可上传的数据")
+            return
+        
+        # 限制每次最多100条
+        limit = 100
+        to_upload = selected_records[:limit]
+        remaining = len(selected_records) - len(to_upload)
+        
         if self.on_database_upload:
-            result = messagebox.askyesno(
-                "确认",
-                f"确定要将 {len(self.files_data)} 个文件上传到数据库吗？"
-            )
+            confirm_msg = f"确定要上传所选的 {len(to_upload)} 个文件到数据库吗？"
+            if remaining > 0:
+                confirm_msg += f"\n(还有 {remaining} 个已选文件将留待下次上传)"
             
-            if result:
-                self.progress.start()
-                self.status_label.config(text="正在上传到数据库...")
-                
-                # 在新线程中执行上传
-                def upload_thread():
-                    try:
-                        success = self.on_database_upload(self.files_data)
-                        self.root.after(0, self.on_upload_complete, success)
-                    except Exception as e:
-                        self.root.after(0, self.on_upload_error, str(e))
-                
-                threading.Thread(target=upload_thread, daemon=True).start()
+            result = messagebox.askyesno("确认", confirm_msg)
+            if not result:
+                return
+            
+            self.progress.start()
+            self.status_label.config(text="正在上传所选数据到数据库...")
+            
+            def upload_thread():
+                try:
+                    success = self.on_database_upload(to_upload)
+                    self.root.after(0, self.on_upload_complete, success)
+                except Exception as e:
+                    self.root.after(0, self.on_upload_error, str(e))
+            
+            threading.Thread(target=upload_thread, daemon=True).start()
     
     def on_upload_complete(self, success):
         """
@@ -484,43 +668,155 @@ class ResearchFileGUI:
         for item in self.file_tree.get_children():
             self.file_tree.delete(item)
         
+        # 获取当前页数据
+        current_page_data = self.get_current_page_data()
+        
+        if not current_page_data:
+            # 空数据提示
+            self.file_tree.insert('', 'end', text='-', values=('', '（无数据）', '', '', '', '', '', '', ''))
+            self.update_pagination()
+            return
+        
         # 添加新项目
-        for i, file_data in enumerate(self.filtered_data):
+        for i, file_data in enumerate(current_page_data):
             file_name = file_data.get('file_name', '')
             file_size = file_data.get('file_size_mb', 0)
+            
+            # 处理创建时间
+            creation_date = file_data.get('creation_date', '')
+            if isinstance(creation_date, datetime):
+                creation_date = creation_date.strftime('%Y-%m-%d')
+            
+            # 处理修改时间
             mod_date = file_data.get('modification_date', '')
             if isinstance(mod_date, datetime):
                 mod_date = mod_date.strftime('%Y-%m-%d')
+            
+            # 处理访问时间
+            access_date = file_data.get('access_date', '')
+            if isinstance(access_date, datetime):
+                access_date = access_date.strftime('%Y-%m-%d')
+            
             category = file_data.get('category', '')
             importance = file_data.get('importance', '')
+            status_code = file_data.get('status', '') or 'unchanged'
+            status = {'new': '新增', 'updated': '更新', 'unchanged': '未变化'}.get(status_code, status_code)
+            
+            # 计算全局序号
+            global_index = (self.current_page - 1) * self.page_size + i + 1
+            
+            # 选择标记（使用Unicode模拟Checkbox）
+            sel_mark = '☑' if file_data.get('file_path') in self.selected_paths else '☐'
             
             self.file_tree.insert(
                 '',
                 'end',
-                text=str(i + 1),
-                values=(file_name, file_size, mod_date, category, importance)
+                text=str(global_index),
+                values=(sel_mark, file_name, file_size, creation_date, mod_date, access_date, status, category, importance)
             )
+        
+        # 更新分页信息
+        self.update_pagination()
     
-    def filter_files(self, *args):
+    def clear_filters(self):
         """
-        根据搜索条件过滤文件
+        清空筛选条件
         """
-        keyword = self.search_var.get().lower()
+        self.search_var.set('')
+        self.status_var.set('全部')
+        self.apply_filters(reset_page=True)
+    
+    def apply_filters(self, *args, reset_page=False):
+        """
+        组合状态和关键词筛选，更新 filtered_data
+        """
+        keyword = (self.search_var.get() or '').lower().strip()
+        status_map = {"全部": "all", "新增": "new", "更新": "updated", "未变化": "unchanged"}
+        status_value = status_map.get(self.status_var.get(), "all")
         
-        if not keyword:
-            self.filtered_data = self.files_data.copy()
+        base = self.files_data
+        filtered = []
+        for f in base:
+            # 状态过滤（f['status'] 使用英文代码）
+            if status_value != 'all' and (f.get('status') != status_value):
+                continue
+            # 关键词过滤
+            if keyword:
+                fn = str(f.get('file_name', '')).lower()
+                cat = str(f.get('category', '')).lower()
+                tags = str(f.get('tags', '')).lower()
+                notes = str(f.get('notes', '')).lower()
+                if (keyword not in fn and keyword not in cat and keyword not in tags and keyword not in notes):
+                    continue
+            filtered.append(f)
+        
+        self.filtered_data = filtered
+        if reset_page:
+            self.current_page = 1
+        self.refresh_file_list()
+    
+    def on_status_filter_change(self, event):
+        """
+        状态筛选改变事件
+        """
+        self.apply_filters(reset_page=True)
+    
+    def clear_cache(self):
+        """
+        清空缓存
+        """
+        result = messagebox.askyesno(
+            "确认清空缓存",
+            "确定要清空文件缓存吗？\n这将导致下次扫描时重新扫描所有文件。"
+        )
+        
+        if result:
+            messagebox.showinfo("提示", "缓存清空功能需要与主程序集成")
+    
+    def on_tree_click(self, event):
+        """
+        点击列表切换选择（仅当点击“选择”列）
+        """
+        region = self.file_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        col = self.file_tree.identify_column(event.x)  # 如 '#1', '#2'
+        if col != '#1':  # '#1' 对应第一列“选择”
+            return
+        row_id = self.file_tree.identify_row(event.y)
+        if not row_id:
+            return
+        item = self.file_tree.item(row_id)
+        try:
+            global_index = int(item['text']) - 1
+        except Exception:
+            return
+        if 0 <= global_index < len(self.filtered_data):
+            record = self.filtered_data[global_index]
+            path = record.get('file_path')
+            if not path:
+                return
+            if path in self.selected_paths:
+                self.selected_paths.remove(path)
+            else:
+                self.selected_paths.add(path)
+            # 刷新该行显示
+            self.refresh_file_list()
+    
+    def toggle_select_all_current_page(self):
+        """
+        表头点击：切换本页全选/全不选
+        """
+        current = self.get_current_page_data()
+        if not current:
+            return
+        current_paths = {rec.get('file_path') for rec in current if rec.get('file_path')}
+        if current_paths.issubset(self.selected_paths):
+            # 全不选
+            self.selected_paths -= current_paths
         else:
-            self.filtered_data = []
-            for file_data in self.files_data:
-                file_name = file_data.get('file_name', '').lower()
-                category = file_data.get('category', '').lower()
-                tags = file_data.get('tags', '').lower()
-                notes = file_data.get('notes', '').lower()
-                
-                if (keyword in file_name or keyword in category or 
-                    keyword in tags or keyword in notes):
-                    self.filtered_data.append(file_data)
-        
+            # 全选
+            self.selected_paths |= current_paths
         self.refresh_file_list()
     
     def on_file_select(self, event):
@@ -530,11 +826,18 @@ class ResearchFileGUI:
         selection = self.file_tree.selection()
         if selection:
             item = self.file_tree.item(selection[0])
-            index = int(item['text']) - 1
+            try:
+                global_index = int(item['text']) - 1
+            except Exception:
+                return
             
-            # 在原始数据中找到对应文件
-            if 0 <= index < len(self.filtered_data):
-                self.current_file_index = self.files_data.index(self.filtered_data[index])
+            # 在过滤后的数据中定位
+            if 0 <= global_index < len(self.filtered_data):
+                record = self.filtered_data[global_index]
+                try:
+                    self.current_file_index = self.files_data.index(record)
+                except ValueError:
+                    return
                 self.load_file_details()
     
     def load_file_details(self):
@@ -596,6 +899,316 @@ class ResearchFileGUI:
             notes = self.notes_text.get(1.0, tk.END).strip()
             self.files_data[self.current_file_index]['notes'] = notes
             self.unsaved_changes = True
+    
+    def add_category(self):
+        """
+        添加新分类
+        """
+        new_category = self.category_var.get().strip()
+        if new_category and new_category not in FILE_CATEGORIES:
+            # 添加到全局分类列表
+            FILE_CATEGORIES.append(new_category)
+            # 更新下拉框选项
+            self.category_combo['values'] = FILE_CATEGORIES
+            messagebox.showinfo("成功", f"已添加新分类: {new_category}")
+    
+    def add_tag(self):
+        """
+        添加新标签
+        """
+        new_tag = self.tags_var.get().strip()
+        if new_tag:
+            current_tags = self.tags_var.get().split(',') if self.tags_var.get() else []
+            current_tags = [tag.strip() for tag in current_tags if tag.strip()]
+            
+            if new_tag not in current_tags:
+                current_tags.append(new_tag)
+                self.tags_var.set(', '.join(current_tags))
+                self.on_tags_change(None)
+                messagebox.showinfo("成功", f"已添加新标签: {new_tag}")
+            else:
+                messagebox.showwarning("警告", f"标签 '{new_tag}' 已存在")
+    
+    def show_tag_selector(self):
+        """
+        显示标签选择器
+        """
+        if not hasattr(self, 'tag_selector_window') or not self.tag_selector_window.winfo_exists():
+            self.tag_selector_window = tk.Toplevel(self.root)
+            self.tag_selector_window.title("选择标签")
+            self.tag_selector_window.geometry("400x300")
+            self.tag_selector_window.resizable(False, False)
+            
+            # 获取当前标签
+            current_tags = self.tags_var.get().split(',') if self.tags_var.get() else []
+            current_tags = [tag.strip() for tag in current_tags if tag.strip()]
+            
+            # 创建标签选择框架
+            main_frame = ttk_bs.Frame(self.tag_selector_window, padding=10)
+            main_frame.pack(fill=BOTH, expand=True)
+            
+            # 预设标签
+            ttk_bs.Label(main_frame, text="预设标签:").pack(anchor=W, pady=(0, 5))
+            
+            preset_frame = ttk_bs.Frame(main_frame)
+            preset_frame.pack(fill=X, pady=(0, 10))
+            
+            self.preset_tag_vars = {}
+            for i, tag in enumerate(PRESET_TAGS):
+                var = tk.BooleanVar(value=tag in current_tags)
+                self.preset_tag_vars[tag] = var
+                
+                cb = ttk_bs.Checkbutton(
+                    preset_frame,
+                    text=tag,
+                    variable=var,
+                    bootstyle="round-toggle"
+                )
+                cb.grid(row=i//3, column=i%3, sticky=W, padx=(0, 10), pady=2)
+            
+            # 自定义标签输入
+            ttk_bs.Label(main_frame, text="自定义标签:").pack(anchor=W, pady=(10, 5))
+            
+            custom_frame = ttk_bs.Frame(main_frame)
+            custom_frame.pack(fill=X, pady=(0, 10))
+            
+            self.custom_tag_var = tk.StringVar()
+            custom_entry = ttk_bs.Entry(
+                custom_frame,
+                textvariable=self.custom_tag_var,
+                width=30
+            )
+            custom_entry.pack(side=LEFT, padx=(0, 5))
+            
+            add_custom_btn = ttk_bs.Button(
+                custom_frame,
+                text="添加",
+                bootstyle="secondary",
+                command=self.add_custom_tag
+            )
+            add_custom_btn.pack(side=LEFT)
+            
+            # 按钮
+            button_frame = ttk_bs.Frame(main_frame)
+            button_frame.pack(fill=X, pady=(20, 0))
+            
+            ok_btn = ttk_bs.Button(
+                button_frame,
+                text="确定",
+                bootstyle="success",
+                command=self.apply_tag_selection
+            )
+            ok_btn.pack(side=RIGHT, padx=(5, 0))
+            
+            cancel_btn = ttk_bs.Button(
+                button_frame,
+                text="取消",
+                bootstyle="secondary",
+                command=self.tag_selector_window.destroy
+            )
+            cancel_btn.pack(side=RIGHT)
+    
+    def add_custom_tag(self):
+        """
+        添加自定义标签
+        """
+        custom_tag = self.custom_tag_var.get().strip()
+        if custom_tag:
+            if custom_tag not in PRESET_TAGS:
+                PRESET_TAGS.append(custom_tag)
+                # 重新创建标签选择器
+                self.tag_selector_window.destroy()
+                self.show_tag_selector()
+                self.custom_tag_var.set(custom_tag)
+            else:
+                messagebox.showwarning("警告", f"标签 '{custom_tag}' 已存在")
+    
+    def apply_tag_selection(self):
+        """
+        应用标签选择
+        """
+        selected_tags = []
+        
+        # 获取选中的预设标签
+        for tag, var in self.preset_tag_vars.items():
+            if var.get():
+                selected_tags.append(tag)
+        
+        # 获取自定义标签
+        custom_tag = self.custom_tag_var.get().strip()
+        if custom_tag and custom_tag not in selected_tags:
+            selected_tags.append(custom_tag)
+        
+        # 更新标签输入框
+        self.tags_var.set(', '.join(selected_tags))
+        self.on_tags_change(None)
+        
+        # 关闭窗口
+        self.tag_selector_window.destroy()
+    
+    def update_pagination(self):
+        """
+        更新分页信息
+        """
+        data_len = len(self.filtered_data) if self.filtered_data is not None else 0
+        if data_len <= 0:
+            self.total_pages = 1
+            self.current_page = 1
+        else:
+            self.total_pages = max(1, (data_len + self.page_size - 1) // self.page_size)
+            self.current_page = min(self.current_page, self.total_pages)
+        
+        # 更新分页控件
+        self.page_var.set(self.current_page)
+        self.total_pages_var.set(str(self.total_pages))
+        self.page_spinbox.configure(to=self.total_pages)
+        
+        # 更新按钮状态
+        self.prev_page_btn.configure(state="normal" if self.current_page > 1 else "disabled")
+        self.next_page_btn.configure(state="normal" if self.current_page < self.total_pages else "disabled")
+        
+        # 更新批量上传按钮状态
+        self.batch_upload_btn.configure(state="normal" if self.filtered_data else "disabled")
+    
+    def get_current_page_data(self):
+        """
+        获取当前页的数据（基于 filtered_data）
+        """
+        data = self.filtered_data or []
+        if not data:
+            return []
+        
+        start_index = (self.current_page - 1) * self.page_size
+        end_index = start_index + self.page_size
+        return data[start_index:end_index]
+    
+    def on_page_change(self):
+        """
+        页码改变事件
+        """
+        new_page = self.page_var.get()
+        if 1 <= new_page <= self.total_pages and new_page != self.current_page:
+            self.current_page = new_page
+            self.refresh_file_list()
+            self.update_pagination()
+    
+    def on_page_size_change(self, event):
+        """
+        每页条数改变
+        """
+        try:
+            new_size = int(self.page_size_var.get())
+            if new_size in (20, 50, 100):
+                self.page_size = new_size
+                self.current_page = 1
+                self.refresh_file_list()
+        except Exception:
+            pass
+    
+    def prev_page(self):
+        """
+        上一页
+        """
+        if self.current_page > 1:
+            self.current_page -= 1
+            self.page_var.set(self.current_page)
+            self.refresh_file_list()
+            self.update_pagination()
+    
+    def next_page(self):
+        """
+        下一页
+        """
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            self.page_var.set(self.current_page)
+            self.refresh_file_list()
+            self.update_pagination()
+    
+    def select_all_current_page(self):
+        """
+        全选当前页
+        """
+        for rec in self.get_current_page_data():
+            path = rec.get('file_path')
+            if path:
+                self.selected_paths.add(path)
+        self.refresh_file_list()
+    
+    def clear_selection_current_page(self):
+        """
+        清空当前页选择
+        """
+        for rec in self.get_current_page_data():
+            path = rec.get('file_path')
+            if path and path in self.selected_paths:
+                self.selected_paths.remove(path)
+        self.refresh_file_list()
+    
+    def batch_upload_current_page(self):
+        """
+        批量上传当前页“已选择”的数据（最多100条；如未选择则默认本页全部）
+        """
+        current_page_data = self.get_current_page_data()
+        if not current_page_data:
+            messagebox.showwarning("警告", "当前页没有数据可上传")
+            return
+        
+        selected_current = [rec for rec in current_page_data if rec.get('file_path') in self.selected_paths]
+        if not selected_current:
+            selected_current = current_page_data  # 默认上传本页全部
+        
+        # 过滤出已分类的数据
+        classified_data = [file_data for file_data in selected_current 
+                           if file_data.get('category') or file_data.get('importance') or 
+                              file_data.get('tags') or file_data.get('notes')]
+        
+        if not classified_data:
+            messagebox.showwarning("警告", "当前页未选择已分类的数据可上传")
+            return
+        
+        limit = 100
+        to_upload = classified_data[:limit]
+        remaining = len(classified_data) - len(to_upload)
+        
+        result = messagebox.askyesno(
+            "确认上传",
+            f"确定要上传 {len(to_upload)} 个文件到数据库吗？" + (f"\n(还有 {remaining} 个将留待下次上传)" if remaining > 0 else "")
+        )
+        
+        if result and self.on_database_upload:
+            self.progress.start()
+            self.status_label.config(text="正在上传当前页数据到数据库...")
+            
+            # 在新线程中执行上传
+            def upload_thread():
+                try:
+                    success = self.on_database_upload(to_upload)
+                    self.root.after(0, self.on_batch_upload_complete, success, len(to_upload))
+                except Exception as e:
+                    self.root.after(0, self.on_batch_upload_error, str(e))
+            
+            threading.Thread(target=upload_thread, daemon=True).start()
+    
+    def on_batch_upload_complete(self, success, count):
+        """
+        批量上传完成回调
+        """
+        self.progress.stop()
+        if success:
+            self.status_label.config(text=f"批量上传成功，共上传 {count} 个文件")
+            messagebox.showinfo("成功", f"当前页数据已成功上传到数据库，共 {count} 个文件")
+        else:
+            self.status_label.config(text="批量上传失败")
+            messagebox.showerror("错误", "批量上传失败")
+    
+    def on_batch_upload_error(self, error_msg):
+        """
+        批量上传错误回调
+        """
+        self.progress.stop()
+        self.status_label.config(text="批量上传失败")
+        messagebox.showerror("错误", f"批量上传时出错：{error_msg}")
     
     def save_current_file(self):
         """
@@ -667,7 +1280,9 @@ class ResearchFileGUI:
         
         # 显示统计信息
         stats_text = f"总文件数: {total_files}\n"
-        stats_text += f"总大小: {total_size:.2f} MB\n\n"
+        stats_text += f"总大小: {total_size:.2f} MB\n"
+        stats_text += f"当前页: {self.current_page}/{self.total_pages}\n"
+        stats_text += f"每页显示: {self.page_size} 条\n\n"
         
         stats_text += "按分类统计:\n"
         for category, count in sorted(category_stats.items()):

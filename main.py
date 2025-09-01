@@ -6,10 +6,15 @@
 import sys
 import os
 import traceback
+import time
+import threading
 from tkinter import messagebox
+import pandas as pd
+from datetime import datetime
 from file_scanner import FileScanner
 from database_manager import DatabaseManager
 from gui_interface import ResearchFileGUI
+from cache_manager import FileCache, DatabaseVersionManager, IncrementalScanner
 from config import DATABASE_CONFIG
 
 
@@ -19,6 +24,11 @@ class ResearchFileManager:
         self.database_manager = DatabaseManager()
         self.gui = None
         
+        # 初始化缓存和版本管理
+        self.cache_manager = FileCache()
+        self.version_manager = None  # 将在数据库连接成功后初始化
+        self.incremental_scanner = None  # 将在版本管理器初始化后创建
+        
     def initialize(self):
         """
         初始化系统
@@ -27,16 +37,25 @@ class ResearchFileManager:
         
         # 测试数据库连接
         print("正在测试数据库连接...")
-        if self.database_manager.connect():
-            print("数据库连接成功")
-            
-            # 创建数据库表
-            if self.database_manager.create_tables():
-                print("数据库表初始化成功")
+        try:
+            if self.database_manager.connect():
+                print("数据库连接成功")
+                
+                # 创建数据库表
+                if self.database_manager.create_tables():
+                    print("数据库表初始化成功")
+                    
+                    # 初始化版本管理器
+                    self.version_manager = DatabaseVersionManager(self.database_manager)
+                    self.incremental_scanner = IncrementalScanner(self.cache_manager, self.version_manager)
+                    print("版本管理器和增量扫描器初始化成功")
+                else:
+                    print("警告: 数据库表初始化失败")
             else:
-                print("警告: 数据库表初始化失败")
-        else:
-            print("警告: 数据库连接失败，部分功能可能不可用")
+                print("警告: 数据库连接失败，部分功能可能不可用")
+        except Exception as e:
+            print(f"警告: 数据库连接失败 ({e})，部分功能可能不可用")
+            print("您可以继续使用文件扫描和分类功能，但无法上传到数据库")
         
         # 初始化GUI
         self.gui = ResearchFileGUI()
@@ -55,35 +74,135 @@ class ResearchFileManager:
         """
         try:
             print("开始扫描文件...")
-            files = self.file_scanner.scan_files()
             
-            if files:
-                print(f"扫描完成，共找到 {len(files)} 个文件")
+            # 使用增量扫描
+            if self.incremental_scanner:
+                print("使用增量扫描模式...")
+                scan_result = self.incremental_scanner.scan_incremental()
                 
-                # 显示统计信息
-                stats = self.file_scanner.get_statistics()
-                print("\n扫描统计:")
-                print(f"总文件数: {stats['total_files']}")
-                print(f"总大小: {stats['total_size_mb']} MB")
+                # 合并所有文件
+                all_files = (scan_result['new_files'] + 
+                           scan_result['updated_files'] + 
+                           scan_result['unchanged_files'])
                 
-                # 自动导出到Excel文件
-                try:
-                    filename = f"scanned_files_{self.file_scanner.current_year}.xlsx"
-                    if self.file_scanner.export_to_excel(filename):
+                if all_files:
+                    print(f"增量扫描完成，共找到 {len(all_files)} 个文件")
+                    print(f"  新增: {len(scan_result['new_files'])} 个")
+                    print(f"  更新: {len(scan_result['updated_files'])} 个")
+                    print(f"  未变化: {len(scan_result['unchanged_files'])} 个")
+                    
+                    # 自动导出到Excel文件
+                    try:
+                        filename = f"scanned_files_{datetime.now().year}.xlsx"
+                        df = pd.DataFrame(all_files)
+                        df.to_excel(filename, index=False, engine='openpyxl')
                         print(f"扫描结果已自动导出到: {filename}")
-                except Exception as e:
-                    print(f"自动导出Excel失败: {e}")
-                
-                return files
+                    except Exception as e:
+                        print(f"自动导出Excel失败: {e}")
+                    
+                    return all_files
+                else:
+                    print("未找到符合条件的文件")
+                    return []
             else:
-                print("未找到符合条件的文件")
-                return []
+                # 回退到传统扫描
+                print("使用传统扫描模式...")
+                files = self.file_scanner.scan_files()
+                
+                if files:
+                    print(f"扫描完成，共找到 {len(files)} 个文件")
+                    
+                    # 显示统计信息
+                    stats = self.file_scanner.get_statistics()
+                    print("\n扫描统计:")
+                    print(f"总文件数: {stats['total_files']}")
+                    print(f"总大小: {stats['total_size_mb']} MB")
+                    
+                    # 自动导出到Excel文件
+                    try:
+                        filename = f"scanned_files_{self.file_scanner.current_year}.xlsx"
+                        if self.file_scanner.export_to_excel(filename):
+                            print(f"扫描结果已自动导出到: {filename}")
+                    except Exception as e:
+                        print(f"自动导出Excel失败: {e}")
+                    
+                    return files
+                else:
+                    print("未找到符合条件的文件")
+                    return []
                 
         except Exception as e:
             print(f"扫描文件时出错: {e}")
             traceback.print_exc()
             raise e
     
+    def _on_reload_detected(self):
+        """
+        热重载通知（在GUI线程中更新状态栏）
+        """
+        try:
+            if self.gui and hasattr(self.gui, 'status_label'):
+                # 通过 after 确保在GUI主线程执行
+                self.gui.root.after(0, lambda: self.gui.status_label.config(text="检测到代码变更，正在重启..."))
+        except Exception:
+            pass
+
+    def _start_hot_reloader(self):
+        """
+        启动轻量热重载：监控关键源码文件变化，自动重启进程。
+        """
+        try:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            watch_names = [
+                'main.py',
+                'gui_interface.py',
+                'file_scanner.py',
+                'database_manager.py',
+                'cache_manager.py',
+                'config.py',
+            ]
+            watch_files = []
+            for name in watch_names:
+                p = os.path.join(base_dir, name)
+                if os.path.exists(p):
+                    watch_files.append(p)
+            if not watch_files:
+                return
+
+            # 记录初始修改时间
+            mtimes = {}
+            for p in watch_files:
+                try:
+                    mtimes[p] = os.path.getmtime(p)
+                except OSError:
+                    mtimes[p] = 0.0
+
+            def watcher():
+                while True:
+                    time.sleep(1.0)
+                    for p in watch_files:
+                        try:
+                            m = os.path.getmtime(p)
+                        except OSError:
+                            m = 0.0
+                        old = mtimes.get(p, 0.0)
+                        if m != old:
+                            # 发现变更，通知并重启
+                            self._on_reload_detected()
+                            time.sleep(0.3)
+                            try:
+                                os.execv(sys.executable, [sys.executable] + sys.argv)
+                            except Exception:
+                                # 兜底退出
+                                os._exit(0)
+                            return
+
+            t = threading.Thread(target=watcher, daemon=True)
+            t.start()
+        except Exception:
+            # 热重载不可用不影响主流程
+            pass
+
     def upload_to_database(self, files_data):
         """
         上传到数据库回调函数
@@ -138,6 +257,8 @@ class ResearchFileManager:
             
             if self.gui:
                 print("启动GUI界面...")
+                # 启动热重载监控
+                self._start_hot_reloader()
                 self.gui.run()
             else:
                 print("GUI初始化失败")

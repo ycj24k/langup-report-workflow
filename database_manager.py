@@ -21,9 +21,13 @@ class DatabaseManager:
         连接到MySQL数据库
         """
         try:
+            # 对密码进行URL编码，处理特殊字符
+            from urllib.parse import quote_plus
+            encoded_password = quote_plus(DATABASE_CONFIG['password'])
+            
             # 首先连接到MySQL服务器（不指定数据库）
             connection_string = (
-                f"mysql+pymysql://{DATABASE_CONFIG['user']}:{DATABASE_CONFIG['password']}"
+                f"mysql+pymysql://{DATABASE_CONFIG['user']}:{encoded_password}"
                 f"@{DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}"
                 f"?charset={DATABASE_CONFIG['charset']}"
             )
@@ -37,7 +41,7 @@ class DatabaseManager:
             
             # 连接到指定数据库
             connection_string_with_db = (
-                f"mysql+pymysql://{DATABASE_CONFIG['user']}:{DATABASE_CONFIG['password']}"
+                f"mysql+pymysql://{DATABASE_CONFIG['user']}:{encoded_password}"
                 f"@{DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}"
                 f"/{self.database_name}?charset={DATABASE_CONFIG['charset']}"
             )

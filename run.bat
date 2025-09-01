@@ -8,7 +8,7 @@ echo ========================================
 echo.
 
 echo 正在启动程序...
-python3 main.py
+python main.py
 
 if errorlevel 1 (
     echo.
