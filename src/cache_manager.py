@@ -70,7 +70,13 @@ class FileCache:
         """更新文件缓存"""
         file_info['hash'] = self.get_file_hash(file_path)
         file_info['cached_at'] = datetime.now()
-        self.cache_data['files'][file_path] = file_info
+        # 持久化必要字段，避免不可序列化对象
+        safe_info = dict(file_info)
+        # 确保日期为 datetime，可被pickle序列化
+        for key in ('creation_date', 'modification_date', 'access_date'):
+            v = safe_info.get(key)
+            safe_info[key] = v
+        self.cache_data['files'][file_path] = safe_info
     
     def remove_file_cache(self, file_path: str):
         """移除文件缓存"""
@@ -102,7 +108,7 @@ class DatabaseVersionManager:
             create_version_table = f"""
             CREATE TABLE IF NOT EXISTS {self.version_table_name} (
                 id INT AUTO_INCREMENT PRIMARY KEY,
-                file_path VARCHAR(1000) NOT NULL UNIQUE,
+                file_path VARCHAR(500) NOT NULL UNIQUE,
                 file_hash VARCHAR(32) NOT NULL,
                 file_size_mb DECIMAL(10,2),
                 modification_date DATETIME,
@@ -110,7 +116,7 @@ class DatabaseVersionManager:
                 status ENUM('new', 'updated', 'unchanged') DEFAULT 'new',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_file_path (file_path(255)),
+                INDEX idx_file_path (file_path(191)),
                 INDEX idx_file_hash (file_hash),
                 INDEX idx_status (status),
                 INDEX idx_modification_date (modification_date)
@@ -323,7 +329,7 @@ class IncrementalScanner:
         dates_to_check = [
             file_info.get('creation_date'),
             file_info.get('modification_date'),
-            # file_info.get('access_date')
+            file_info.get('access_date')
         ]
         
         for date_obj in dates_to_check:

@@ -1,0 +1,31 @@
+# PDF处理
+PyMuPDF==1.23.8
+Pillow==10.0.1
+
+# OCR识别
+paddlepaddle==2.5.2
+paddleocr==2.7.0.3
+
+# 布局检测
+opencv-python==4.8.1.78
+torch==2.1.0
+torchvision==0.16.0
+ultralytics==8.0.196
+
+# 向量化和AI
+langchain==0.1.17
+langchain-community==0.0.38
+openai==1.30.1
+ollama==0.1.7
+
+# 向量数据库
+pymilvus==2.3.7
+
+# Web框架
+fastapi==0.111.0
+uvicorn==0.30.0
+
+# 工具库
+loguru==0.7.2
+numpy==1.24.3
+scikit-image==0.21.0

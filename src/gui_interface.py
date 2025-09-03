@@ -22,11 +22,40 @@ class ResearchFileGUI:
         self.root.geometry("1400x800")
         self.root.minsize(1200, 600)
         
-        # 样式优化：表头背景、边框、居中
+        # 样式优化：Ant-Design风格（表头、选中、斑马纹、扁平化）
         self.style = ttk.Style()
         try:
-            self.style.configure('Treeview.Heading', background='#E9F2FF', foreground='#333333', anchor='center')
-            self.style.configure('Treeview', rowheight=24, borderwidth=1, relief='solid')
+            # 行样式（大幅增加行高和边框）
+            self.style.configure(
+                'Ant.Treeview',
+                background='#FFFFFF',
+                fieldbackground='#FFFFFF',
+                foreground='#1f2329',
+                rowheight=50,  # 进一步增加行高
+                borderwidth=1,
+                relief='solid',  # 显示边框
+                font=('微软雅黑', 11)
+            )
+            self.style.map(
+                'Ant.Treeview',
+                background=[('selected', '#E6F4FF')],
+                foreground=[('selected', '#1D39C4')]
+            )
+            # 表头样式（增加边框）
+            self.style.configure(
+                'Ant.Treeview.Heading',
+                background='#FAFAFA',
+                foreground='#1f2329',
+                anchor='center',
+                padding=(8, 10),
+                borderwidth=1,
+                relief='solid',  # 表头也显示边框
+                font=('微软雅黑', 11, 'bold')
+            )
+            self.style.map(
+                'Ant.Treeview.Heading',
+                background=[('active', '#F0F0F0')]
+            )
         except Exception:
             pass
         
@@ -46,6 +75,7 @@ class ResearchFileGUI:
         # 回调函数
         self.on_file_scan = None
         self.on_database_upload = None
+        self.on_parse_files = None
         
         self.create_widgets()
         self.setup_layout()
@@ -86,6 +116,14 @@ class ResearchFileGUI:
             command=self.upload_selected_to_database
         )
         
+        # 解析按钮（解析已选择项，OCR并自动分类打标签）
+        self.parse_btn = ttk_bs.Button(
+            self.toolbar_frame,
+            text="解析(已选)",
+            bootstyle="warning",
+            command=self.parse_selected_files
+        )
+        
         # 进度条
         self.progress = ttk_bs.Progressbar(
             self.toolbar_frame,
@@ -110,79 +148,117 @@ class ResearchFileGUI:
             padding=10
         )
         
-        # 搜索和筛选框架
+        # 搜索和筛选框架（使用flex布局）
         self.search_frame = ttk_bs.Frame(self.left_frame)
         
-        # 搜索框
-        search_label_frame = ttk_bs.Frame(self.search_frame)
-        search_label_frame.pack(fill=X, pady=(0, 5))
+        # 创建flex容器
+        flex_container = ttk_bs.Frame(self.search_frame)
+        flex_container.pack(fill=X, pady=(0, 5))
         
-        ttk_bs.Label(search_label_frame, text="搜索:").pack(side=LEFT, padx=(0, 5))
+        # 关键词搜索
+        keyword_frame = ttk_bs.Frame(flex_container)
+        keyword_frame.pack(side=LEFT, padx=(0, 10), pady=2)
+        ttk_bs.Label(keyword_frame, text="关键词:").pack(side=LEFT, padx=(0, 5))
         self.search_var = tk.StringVar()
         self.search_entry = ttk_bs.Entry(
-            search_label_frame,
+            keyword_frame,
             textvariable=self.search_var,
-            width=30
+            width=15
         )
-        self.search_entry.pack(side=LEFT, fill=X, expand=True)
+        self.search_entry.pack(side=LEFT)
         
-        # 搜索/清空按钮
+        # 状态筛选
+        status_frame = ttk_bs.Frame(flex_container)
+        status_frame.pack(side=LEFT, padx=(0, 10), pady=2)
+        ttk_bs.Label(status_frame, text="状态:").pack(side=LEFT, padx=(0, 5))
+        self.status_var = tk.StringVar(value="全部")
+        self.status_combo = ttk_bs.Combobox(
+            status_frame,
+            textvariable=self.status_var,
+            values=["全部", "新增", "更新", "未变化"],
+            state="readonly",
+            width=8
+        )
+        self.status_combo.pack(side=LEFT)
+        self.status_combo.bind('<<ComboboxSelected>>', self.on_status_filter_change)
+        
+        # 搜索按钮
         self.search_btn = ttk_bs.Button(
-            search_label_frame,
+            flex_container,
             text="搜索",
             bootstyle="primary",
             command=lambda: self.apply_filters(reset_page=True)
         )
-        self.search_btn.pack(side=LEFT, padx=(8, 4))
+        self.search_btn.pack(side=LEFT, padx=(0, 5), pady=2)
         
+        # 重置按钮
         self.clear_btn = ttk_bs.Button(
-            search_label_frame,
+            flex_container,
             text="重置",
             bootstyle="secondary",
             command=self.clear_filters
         )
-        self.clear_btn.pack(side=LEFT)
-        
-        # 状态筛选
-        filter_frame = ttk_bs.Frame(self.search_frame)
-        filter_frame.pack(fill=X)
-        
-        ttk_bs.Label(filter_frame, text="状态:").pack(side=LEFT, padx=(0, 5))
-        self.status_var = tk.StringVar(value="全部")
-        self.status_combo = ttk_bs.Combobox(
-            filter_frame,
-            textvariable=self.status_var,
-            values=["全部", "新增", "更新", "未变化"],
-            state="readonly",
-            width=10
-        )
-        self.status_combo.pack(side=LEFT, padx=(0, 10))
-        self.status_combo.bind('<<ComboboxSelected>>', self.on_status_filter_change)
+        self.clear_btn.pack(side=LEFT, padx=(0, 5), pady=2)
         
         # 清空缓存按钮
         self.clear_cache_btn = ttk_bs.Button(
-            filter_frame,
+            flex_container,
             text="清空缓存",
             bootstyle="danger",
             command=self.clear_cache
         )
-        self.clear_cache_btn.pack(side=RIGHT)
+        self.clear_cache_btn.pack(side=LEFT, padx=(0, 5), pady=2)
         
         # 文件列表
         self.file_list_frame = ttk_bs.Frame(self.left_frame)
         
-        # 创建Treeview（新增“选择”列）
-        columns = ("选择", "文件名", "大小(MB)", "创建时间", "修改时间", "访问时间", "状态", "分类", "重要性")
+        # 创建Treeview（选择列在最左边，序号在第二列）
+        columns = ("选择", "序号", "文件名", "大小(MB)", "创建时间", "修改时间", "访问时间", "状态", "分类", "重要性")
         self.file_tree = ttk.Treeview(
             self.file_list_frame,
             columns=columns,
-            show="tree headings",
+            show="headings",  # 不显示树形列，所有列都是数据列
             height=20
         )
         
-        # 设置列宽与居中
-        self.file_tree.column("#0", width=60, minwidth=60, anchor=CENTER)
-        self.file_tree.column("选择", width=70, minwidth=60, anchor=CENTER)
+        # 直接设置样式 - 使用原生tkinter样式
+        style = ttk.Style()
+        
+        # 自定义样式，避免与全局样式冲突并修复表头重复边框
+        style.configure("Langup.Treeview",
+                       rowheight=60,
+                       font=('微软雅黑', 11),
+                       borderwidth=1,
+                       relief='solid',
+                       background='white',
+                       foreground='black')
+        
+        # 表头使用同名前缀样式，去掉重复边框，只保留背景与内边距
+        style.configure("Langup.Treeview.Heading",
+                       font=('微软雅黑', 11, 'bold'),
+                       borderwidth=0,
+                       relief='flat',
+                       padding=(8, 10),
+                       background='#f0f0f0',
+                       foreground='black')
+        
+        # 选中样式
+        style.map("Langup.Treeview",
+                 background=[('selected', '#1890FF')],
+                 foreground=[('selected', 'white')])
+        
+        # 应用自定义样式到当前Treeview
+        self.file_tree.configure(style="Langup.Treeview")
+        
+        # 斑马纹与悬浮高亮
+        self.file_tree.tag_configure('odd', background='#FFFFFF')
+        self.file_tree.tag_configure('even', background='#FAFAFA')
+        self.file_tree.tag_configure('hover', background='#E6F7FF')
+        self.file_tree.tag_configure('selected', background='#1890FF', foreground='white')
+        
+        # 设置列宽与居中（选择列更宽以显示更大的复选框图标）
+        self.file_tree.column("选择", width=60, minwidth=50, anchor=CENTER)
+        self.file_tree.column("序号", width=60, minwidth=50, anchor=CENTER)
         self.file_tree.column("文件名", width=200, minwidth=140, anchor=CENTER)
         self.file_tree.column("大小(MB)", width=90, minwidth=70, anchor=CENTER)
         self.file_tree.column("创建时间", width=110, minwidth=90, anchor=CENTER)
@@ -192,12 +268,13 @@ class ResearchFileGUI:
         self.file_tree.column("分类", width=100, minwidth=80, anchor=CENTER)
         self.file_tree.column("重要性", width=80, minwidth=60, anchor=CENTER)
         
-        # 设置标题
-        self.file_tree.heading("#0", text="序号", anchor=CENTER)
+        # 设置标题（“全选”显示为复选框样式，根据状态动态更新）
         for col in columns:
-            self.file_tree.heading(col, text=col, anchor=CENTER)
-        # 表头“选择”列支持全选/反选
-        self.file_tree.heading("选择", command=self.toggle_select_all_current_page)
+            if col == "选择":
+                # 初始标题文本，后续在 refresh_file_list 中根据状态更新
+                self.file_tree.heading(col, text="☐", anchor=CENTER, command=self.toggle_select_all_current_page)
+            else:
+                self.file_tree.heading(col, text=col, anchor=CENTER)
         
         # 滚动条
         self.tree_scroll = ttk.Scrollbar(
@@ -210,6 +287,8 @@ class ResearchFileGUI:
         # 绑定选择/点击事件
         self.file_tree.bind('<<TreeviewSelect>>', self.on_file_select)
         self.file_tree.bind('<Button-1>', self.on_tree_click)
+        self.file_tree.bind('<Motion>', self.on_tree_motion)
+        self.file_tree.bind('<Leave>', self.on_tree_leave)
         
         # 右侧详情区域
         self.right_frame = ttk_bs.LabelFrame(
@@ -484,6 +563,9 @@ class ResearchFileGUI:
         )
         self.stats_text.configure(yscrollcommand=self.stats_scroll.set)
         
+        # 悬浮高亮状态
+        self._hover_row_id = None
+        
     def setup_layout(self):
         """
         设置界面布局
@@ -523,12 +605,14 @@ class ResearchFileGUI:
         self.stats_text.pack(side=LEFT, fill=BOTH, expand=True)
         self.stats_scroll.pack(side=RIGHT, fill=Y)
         
-    def set_callbacks(self, scan_callback=None, upload_callback=None):
+    def set_callbacks(self, scan_callback=None, upload_callback=None, clear_cache_callback=None, parse_callback=None):
         """
         设置回调函数
         """
         self.on_file_scan = scan_callback
         self.on_database_upload = upload_callback
+        self.on_clear_cache = clear_cache_callback
+        self.on_parse_files = parse_callback
         
     def scan_files(self):
         """
@@ -660,6 +744,73 @@ class ResearchFileGUI:
         self.status_label.config(text="上传失败")
         messagebox.showerror("错误", f"上传数据时出错：{error_msg}")
     
+    def parse_selected_files(self):
+        """
+        解析已选择的文件（PDF OCR处理）
+        """
+        if not self.files_data:
+            messagebox.showwarning("警告", "没有数据可解析")
+            return
+        
+        if not self.selected_paths:
+            messagebox.showwarning("警告", "请先在列表中勾选要解析的文件")
+            return
+        
+        # 获取已选择的文件
+        selected_records = [f for f in self.files_data if f.get('file_path') in self.selected_paths]
+        if not selected_records:
+            messagebox.showwarning("警告", "未找到可解析的文件")
+            return
+        
+        # 过滤出PDF文件
+        pdf_files = [f for f in selected_records if f.get('extension', '').lower() == '.pdf']
+        if not pdf_files:
+            messagebox.showwarning("警告", "所选文件中没有PDF文件")
+            return
+        
+        if self.on_parse_files:
+            confirm_msg = f"确定要解析所选的 {len(pdf_files)} 个PDF文件吗？\n这将进行OCR识别和向量化处理。"
+            
+            result = messagebox.askyesno("确认", confirm_msg)
+            if not result:
+                return
+            
+            self.progress.start()
+            self.status_label.config(text="正在解析PDF文件...")
+            
+            def parse_thread():
+                try:
+                    success = self.on_parse_files(pdf_files)
+                    self.root.after(0, self.on_parse_complete, success)
+                except Exception as e:
+                    self.root.after(0, self.on_parse_error, str(e))
+            
+            threading.Thread(target=parse_thread, daemon=True).start()
+        else:
+            messagebox.showwarning("警告", "解析功能未启用")
+    
+    def on_parse_complete(self, success):
+        """
+        解析完成回调
+        """
+        self.progress.stop()
+        if success:
+            self.status_label.config(text="解析成功")
+            messagebox.showinfo("成功", "PDF文件解析完成")
+            # 刷新文件列表以显示更新后的状态
+            self.refresh_file_list()
+        else:
+            self.status_label.config(text="解析失败")
+            messagebox.showerror("错误", "PDF文件解析失败")
+    
+    def on_parse_error(self, error_msg):
+        """
+        解析错误回调
+        """
+        self.progress.stop()
+        self.status_label.config(text="解析失败")
+        messagebox.showerror("错误", f"解析PDF文件时出错：{error_msg}")
+    
     def refresh_file_list(self):
         """
         刷新文件列表
@@ -673,7 +824,7 @@ class ResearchFileGUI:
         
         if not current_page_data:
             # 空数据提示
-            self.file_tree.insert('', 'end', text='-', values=('', '（无数据）', '', '', '', '', '', '', ''))
+            self.file_tree.insert('', 'end', values=('', '', '（无数据）', '', '', '', '', '', '', ''))
             self.update_pagination()
             return
         
@@ -705,18 +856,30 @@ class ResearchFileGUI:
             # 计算全局序号
             global_index = (self.current_page - 1) * self.page_size + i + 1
             
-            # 选择标记（使用Unicode模拟Checkbox）
+            # 更大的Checkbox符号
             sel_mark = '☑' if file_data.get('file_path') in self.selected_paths else '☐'
             
             self.file_tree.insert(
                 '',
                 'end',
-                text=str(global_index),
-                values=(sel_mark, file_name, file_size, creation_date, mod_date, access_date, status, category, importance)
+                values=(sel_mark, global_index, file_name, file_size, creation_date, mod_date, access_date, status, category, importance),
+                tags=("even" if i % 2 == 0 else "odd",)
             )
         
         # 更新分页信息
         self.update_pagination()
+        
+        # 刷新表头“全选”复选框文本
+        try:
+            current = self.get_current_page_data()
+            current_paths = {rec.get('file_path') for rec in current if rec.get('file_path')}
+            if current and current_paths and current_paths.issubset(self.selected_paths):
+                header_text = "☑"
+            else:
+                header_text = "☐"
+            self.file_tree.heading("选择", text=header_text)
+        except Exception:
+            pass
     
     def clear_filters(self):
         """
@@ -771,28 +934,46 @@ class ResearchFileGUI:
         )
         
         if result:
-            messagebox.showinfo("提示", "缓存清空功能需要与主程序集成")
+            try:
+                # 通过回调函数清空缓存
+                if hasattr(self, 'on_clear_cache') and self.on_clear_cache:
+                    self.on_clear_cache()
+                    # 清空当前显示的数据
+                    self.files_data = []
+                    self.filtered_data = []
+                    self.selected_paths.clear()
+                    self.current_page = 1
+                    self.refresh_file_list()
+                    self.update_statistics()
+                    self.status_label.config(text="缓存已清空")
+                    messagebox.showinfo("成功", "缓存已清空，请重新扫描文件")
+                else:
+                    messagebox.showwarning("警告", "缓存清空功能需要与主程序集成")
+            except Exception as e:
+                messagebox.showerror("错误", f"清空缓存失败: {e}")
     
     def on_tree_click(self, event):
         """
-        点击列表切换选择（仅当点击“选择”列）
+        点击列表切换选择（仅当点击"选择"列）
         """
         region = self.file_tree.identify("region", event.x, event.y)
         if region != "cell":
             return
         col = self.file_tree.identify_column(event.x)  # 如 '#1', '#2'
-        if col != '#1':  # '#1' 对应第一列“选择”
+        if col != '#1':  # '#1' 对应第一列"选择"
             return
         row_id = self.file_tree.identify_row(event.y)
         if not row_id:
             return
-        item = self.file_tree.item(row_id)
+        
+        # 获取行索引（从0开始）
         try:
-            global_index = int(item['text']) - 1
+            row_index = self.file_tree.index(row_id)
         except Exception:
             return
-        if 0 <= global_index < len(self.filtered_data):
-            record = self.filtered_data[global_index]
+            
+        if 0 <= row_index < len(self.get_current_page_data()):
+            record = self.get_current_page_data()[row_index]
             path = record.get('file_path')
             if not path:
                 return
@@ -802,6 +983,31 @@ class ResearchFileGUI:
                 self.selected_paths.add(path)
             # 刷新该行显示
             self.refresh_file_list()
+
+    def on_tree_motion(self, event):
+        """
+        鼠标移动到行上时高亮该行（Ant风格悬浮）
+        """
+        row_id = self.file_tree.identify_row(event.y)
+        if row_id == self._hover_row_id:
+            return
+        # 移除旧hover
+        if self._hover_row_id is not None and self.file_tree.exists(self._hover_row_id):
+            # 还原为奇偶样式
+            idx = self.file_tree.index(self._hover_row_id)
+            self.file_tree.item(self._hover_row_id, tags=("even" if idx % 2 == 0 else "odd",))
+        self._hover_row_id = row_id if row_id else None
+        if self._hover_row_id is not None:
+            self.file_tree.item(self._hover_row_id, tags=("hover",))
+
+    def on_tree_leave(self, event):
+        """
+        鼠标离开控件时移除高亮
+        """
+        if self._hover_row_id is not None and self.file_tree.exists(self._hover_row_id):
+            idx = self.file_tree.index(self._hover_row_id)
+            self.file_tree.item(self._hover_row_id, tags=("even" if idx % 2 == 0 else "odd",))
+        self._hover_row_id = None
     
     def toggle_select_all_current_page(self):
         """
@@ -827,13 +1033,15 @@ class ResearchFileGUI:
         if selection:
             item = self.file_tree.item(selection[0])
             try:
-                global_index = int(item['text']) - 1
+                # 获取行索引（从0开始）
+                row_index = self.file_tree.index(selection[0])
             except Exception:
                 return
             
             # 在过滤后的数据中定位
-            if 0 <= global_index < len(self.filtered_data):
-                record = self.filtered_data[global_index]
+            current_page_data = self.get_current_page_data()
+            if 0 <= row_index < len(current_page_data):
+                record = current_page_data[row_index]
                 try:
                     self.current_file_index = self.files_data.index(record)
                 except ValueError:

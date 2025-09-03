@@ -63,8 +63,16 @@ class ResearchFileManager:
         # 设置回调函数
         self.gui.set_callbacks(
             scan_callback=self.scan_files,
-            upload_callback=self.upload_to_database
+            upload_callback=self.upload_to_database,
+            clear_cache_callback=self.clear_cache,
+            parse_callback=self.parse_files
         )
+        
+        # 启动时尝试加载缓存中的上次扫描结果
+        try:
+            self._load_cached_into_gui()
+        except Exception as e:
+            print(f"加载缓存到GUI失败: {e}")
         
         print("系统初始化完成")
         
@@ -105,12 +113,24 @@ class ResearchFileManager:
                     print("未找到符合条件的文件")
                     return []
             else:
-                # 回退到传统扫描
+                # 回退到传统扫描（无数据库连接也能缓存）
                 print("使用传统扫描模式...")
                 files = self.file_scanner.scan_files()
                 
                 if files:
                     print(f"扫描完成，共找到 {len(files)} 个文件")
+                    
+                    # 将结果写入本地缓存，便于下次直接加载
+                    try:
+                        for f in files:
+                            # 默认状态
+                            if not f.get('status'):
+                                f['status'] = 'unchanged'
+                            self.cache_manager.update_file_cache(f.get('file_path', ''), f)
+                        self.cache_manager.save_cache()
+                        print("扫描结果已写入本地缓存")
+                    except Exception as e:
+                        print(f"写入缓存失败: {e}")
                     
                     # 显示统计信息
                     stats = self.file_scanner.get_statistics()
@@ -203,6 +223,31 @@ class ResearchFileManager:
             # 热重载不可用不影响主流程
             pass
 
+    def parse_files(self, files_data):
+        """
+        调用OCR模块解析文件内容，返回 {file_path: {parsed: bool, category: str|None, tags: str|None, notes: str|None}}
+        """
+        # 尝试导入用户的OCR模块：期望提供 parse_files(files: List[dict]) -> Dict[str, dict]
+        try:
+            from ocr_parser import parse_files as user_parse_files
+        except Exception:
+            # 兜底：提供一个占位实现，标记为未解析
+            def user_parse_files(files):
+                result = {}
+                for f in files:
+                    fp = f.get('file_path')
+                    result[fp] = {"parsed": False}
+                return result
+        
+        try:
+            result = user_parse_files(files_data)
+            if not isinstance(result, dict):
+                raise ValueError("OCR接口返回类型应为dict")
+            return result
+        except Exception as e:
+            print(f"解析失败: {e}")
+            raise
+
     def upload_to_database(self, files_data):
         """
         上传到数据库回调函数
@@ -212,6 +257,16 @@ class ResearchFileManager:
                 print("没有数据需要上传")
                 return False
             
+            # 上传限制：仅允许 parsed=True 的文件
+            filtered = []
+            for f in files_data:
+                if f.get('parsed') is True:
+                    filtered.append(f)
+            if not filtered:
+                print("未找到已解析的文件，已阻止上传")
+                messagebox.showwarning("限制", "只有解析成功的文件才可上传，请先执行解析")
+                return False
+            
             # 检查数据库连接
             if not self.database_manager.connection:
                 print("数据库未连接，正在重新连接...")
@@ -219,14 +274,14 @@ class ResearchFileManager:
                     print("数据库连接失败")
                     return False
             
-            print(f"开始上传 {len(files_data)} 个文件到数据库...")
+            print(f"开始上传 {len(filtered)} 个文件到数据库...")
             
             # 生成批次名称
             from datetime import datetime
             batch_name = f"手动上传_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             
             # 执行批量上传
-            success = self.database_manager.upload_files_batch(files_data, batch_name)
+            success = self.database_manager.upload_files_batch(filtered, batch_name)
             
             if success:
                 print("数据上传成功")
@@ -282,6 +337,57 @@ class ResearchFileManager:
             self.database_manager.close()
         
         print("程序已退出")
+
+    def clear_cache(self):
+        """
+        清空本地缓存
+        """
+        try:
+            if self.cache_manager:
+                self.cache_manager.clear_cache()
+                print("本地缓存已清空")
+                return True
+            return False
+        except Exception as e:
+            print(f"清空缓存失败: {e}")
+            return False
+
+    def _load_cached_into_gui(self):
+        """
+        将缓存中的上次扫描结果（当年数据）加载到GUI，避免首次必须重新扫描。
+        """
+        if not self.gui:
+            return
+        cache_files_map = self.cache_manager.get_cached_files() if self.cache_manager else {}
+        if not cache_files_map:
+            print("缓存中没有历史记录")
+            return
+        current_year = datetime.now().year
+        files = []
+        for file_info in cache_files_map.values():
+            try:
+                c = file_info.get('creation_date')
+                m = file_info.get('modification_date')
+                a = file_info.get('access_date')
+                in_year = False
+                for dt in (c, m, a):
+                    if dt and hasattr(dt, 'year') and dt.year == current_year:
+                        in_year = True
+                        break
+                if not in_year:
+                    continue
+                # 默认状态
+                if not file_info.get('status'):
+                    file_info['status'] = 'unchanged'
+                files.append(file_info)
+            except Exception:
+                continue
+        if files:
+            print(f"从缓存加载 {len(files)} 条记录到GUI")
+            # 直接将数据交给GUI显示
+            self.gui.on_scan_complete(files)
+        else:
+            print("缓存中没有当年数据")
 
 
 def check_requirements():

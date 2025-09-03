@@ -5,7 +5,8 @@
 import os
 
 # 网络盘路径配置
-NETWORK_PATH = r"\\NAS\study\research_reports"
+# NETWORK_PATH = r"\\NAS\study\research_reports"
+NETWORK_PATH = r"E:\project\sideline\changshashuziyoumin\research-report-list"
 
 # 数据库配置
 DATABASE_CONFIG = {
@@ -13,7 +14,7 @@ DATABASE_CONFIG = {
     'port': 3306,
     'user': 'Knowledgeflow',  # 请根据实际情况修改
     'password': 'P@ssw0rd1234!',  # 请根据实际情况修改
-    'database': 'research_reports',  # 修改为我们的数据库名
+    'database': 'knowledgeflow',  # 使用用户有权限的数据库
     'charset': 'utf8mb4'
 }
 

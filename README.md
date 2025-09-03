@@ -1,154 +1,175 @@
-# 研报文件分类管理系统
+# 🚀 研报文件分类管理系统
 
-一个用于扫描、分类和管理研报文件的Python应用程序，支持从网络盘读取文件信息，手动分类打标签，并批量上传到MySQL数据库。
+## 📋 项目简介
 
-## 功能特性
+研报文件分类管理系统是一个基于Python的智能文件管理工具，专门用于处理和研究报告PDF文件。系统具备以下核心功能：
 
-- 📂 **文件扫描**: 扫描网络盘中的研报文件，获取详细信息
-- 📅 **日期筛选**: 自动筛选今年内有更新的文件
-- 🏷️ **手动分类**: 图形化界面支持手动分类和打标签
-- 💾 **数据库存储**: 批量上传文件信息到MySQL数据库
-- 📊 **Excel支持**: 支持Excel文件导入/导出
-- 📈 **统计信息**: 提供详细的文件统计信息
+- 🔍 **智能文件扫描**: 自动扫描网络盘中的研报文件
+- 📊 **OCR识别**: 使用PaddleOCR进行PDF文本识别
+- 🧠 **AI分析**: 基于LLM的内容摘要和关键词提取
+- 🔢 **向量化存储**: 支持本地存储和Milvus数据库
+- 🖥️ **图形界面**: 直观的GUI操作界面
+- 💾 **数据库管理**: MySQL数据库存储和查询
 
-## 快速开始
-
-### 1. 环境要求
-- Windows 10/11
-- Python 3.6+（建议使用Python 3.13）
-- MySQL 5.7+
-- 网络盘访问权限
-
-### 2. 安装依赖
-```bash
-# 运行安装脚本
-install.bat
-
-# 或手动安装
-python -m pip install -r requirements.txt
-```
-
-### 3. 配置数据库
-编辑 `config.py` 文件，修改数据库连接信息：
-```python
-DATABASE_CONFIG = {
-    'host': '192.168.3.104',
-    'port': 3306,
-    'user': 'your_username',
-    'password': 'your_password',
-    'database': 'research_reports',
-    'charset': 'utf8mb4'
-}
-```
-
-### 4. 运行程序
-```bash
-# 方式1: 双击运行
-run.bat
-
-# 方式2: 命令行运行
-python main.py
-```
-
-## 项目结构
+## 🏗️ 项目结构
 
 ```
 langup-report-workflow/
-├── main.py                 # 主程序入口
-├── file_scanner.py         # 文件扫描模块
-├── database_manager.py     # 数据库管理模块
-├── gui_interface.py        # GUI界面模块
-├── config.py              # 配置文件
-├── requirements.txt       # Python依赖
-├── install.bat           # 安装脚本
-├── run.bat              # 运行脚本
-├── test_database.py     # 数据库测试工具
-├── test_scan.py         # 文件扫描测试工具
-├── config_template.py   # 配置文件模板
-├── 使用说明.md          # 详细使用说明
-└── README.md           # 项目说明
+├── 📁 src/                          # 源代码目录
+│   ├── 📄 main.py                   # 主程序入口
+│   ├── 📄 config.py                 # 配置文件
+│   ├── 📄 file_scanner.py           # 文件扫描器
+│   ├── 📄 gui_interface.py          # GUI界面
+│   ├── 📄 cache_manager.py          # 缓存管理器
+│   ├── 📄 database_manager.py       # 数据库管理器
+│   └── 📁 pdf_ocr_module/          # PDF OCR模块
+├── 📁 docs/                         # 文档目录
+├── 📁 tests/                        # 测试目录
+├── 📁 scripts/                      # 脚本目录
+└── 📁 data/                         # 数据目录
 ```
 
-## 使用方法
+详细结构说明请查看 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
 
-### 基本流程
-1. **扫描文件**: 点击"扫描文件"按钮，扫描网络盘中的研报文件
-2. **分类标记**: 在界面中对文件进行分类和标签设置
-3. **保存数据**: 将分类结果导出为Excel或上传到数据库
+## 🚀 快速开始
 
-### 主要功能
-- **文件扫描**: 自动扫描 `\\NAS\study\study` 路径
-- **智能筛选**: 只显示今年内有更新的文件
-- **多维分类**: 支持分类、重要性、标签、备注等多维度标记
-- **批量处理**: 支持批量上传和导出操作
+### 环境要求
 
-## 测试工具
+- Python 3.8+
+- MySQL 5.7+
+- Windows 10/11
 
-### 数据库连接测试
+### 安装步骤
+
+1. **克隆项目**
+   ```bash
+   git clone <repository-url>
+   cd langup-report-workflow
+   ```
+
+2. **安装依赖**
+   ```bash
+   # 使用安装脚本
+   scripts/install.bat
+   
+   # 或手动安装
+   pip install -r requirements.txt
+   pip install -r src/pdf_ocr_module/requirements.txt
+   ```
+
+3. **配置数据库**
+   - 编辑 `src/config.py` 文件
+   - 设置数据库连接信息
+   - 确保MySQL服务运行
+
+4. **运行程序**
+   ```bash
+   # 使用运行脚本
+   scripts/run.bat
+   
+   # 或直接运行
+   python src/main.py
+   ```
+
+## 🎯 核心功能
+
+### 文件扫描
+- 自动扫描指定网络路径
+- 智能识别文件类型和更新时间
+- 支持增量扫描和缓存管理
+
+### PDF OCR处理
+- 基于PaddleOCR的文本识别
+- 智能布局检测（文本、图片、表格）
+- 多语言支持
+
+### AI内容分析
+- 文本摘要生成
+- 关键词提取
+- 内容分类和标签
+
+### 向量化存储
+- 支持多种向量化模型
+- 本地存储和Milvus数据库
+- 智能搜索和相似度匹配
+
+### 用户界面
+- 直观的图形操作界面
+- 文件列表和预览功能
+- 批量操作和进度显示
+
+## 📖 使用说明
+
+详细使用说明请查看 [docs/使用说明.md](docs/使用说明.md)
+
+## 🔧 配置说明
+
+### 基础配置
+- 网络盘路径配置
+- 数据库连接设置
+- OCR模型参数调整
+
+### 高级配置
+- 向量化模型选择
+- 缓存策略设置
+- 日志级别配置
+
+## 🧪 测试
+
 ```bash
-python test_database.py
+# 运行测试
+cd tests
+python -m pytest
+
+# 或运行特定测试
+python test_file_scanner.py
 ```
 
-### 文件扫描测试
-```bash
-python test_scan.py
-```
+## 📝 开发说明
 
-## 配置说明
+### 代码规范
+- 遵循PEP 8编码规范
+- 使用类型注解
+- 完整的文档字符串
 
-### 网络路径配置
-默认扫描路径为 `\\NAS\study\study`，可在 `config.py` 中修改。
+### 模块结构
+- 清晰的模块划分
+- 统一的接口设计
+- 完善的错误处理
 
-### 文件格式支持
-默认支持：PDF, DOC, DOCX, TXT, XLS, XLSX, PPT, PPTX
+### 扩展开发
+- 支持插件式架构
+- 易于添加新功能
+- 模块化设计
 
-### 分类体系
-- 宏观经济
-- 行业研究
-- 公司研究
-- 投资策略
-- 固定收益
-- 量化研究
-- 其他
+## 🐛 问题反馈
 
-## 数据库表结构
+如果您遇到问题或有改进建议，请：
 
-### research_files (主表)
-- 文件基本信息（名称、路径、大小等）
-- 时间信息（创建、修改、访问时间）
-- 分类信息（分类、重要性、标签、备注）
+1. 查看 [docs/OCR向量库修复总结.md](docs/OCR向量库修复总结.md)
+2. 检查日志文件
+3. 提交Issue或Pull Request
 
-### upload_batches (批次记录)
-- 批次上传记录和统计信息
+## 📄 许可证
 
-### file_categories (分类管理)
-- 文件分类定义和颜色配置
+本项目采用 MIT 许可证
 
-## 常见问题
+## 🤝 贡献
 
-### Q: 网络盘路径无法访问？
-A: 请确保网络连接正常，并且有权限访问指定路径。
+欢迎贡献代码和文档！
 
-### Q: 数据库连接失败？
-A: 请检查数据库服务器状态和配置信息，运行 `test_database.py` 进行诊断。
+1. Fork 项目
+2. 创建功能分支
+3. 提交更改
+4. 推送到分支
+5. 创建 Pull Request
 
-### Q: 扫描速度慢？
-A: 网络盘访问速度影响扫描效率，建议分批次处理大量文件。
+## 📞 联系方式
 
-## 技术栈
+- 项目维护者: [您的姓名]
+- 邮箱: [您的邮箱]
+- 项目地址: [项目URL]
 
-- **语言**: Python 3.6+
-- **GUI**: tkinter + ttkbootstrap
-- **数据库**: MySQL + SQLAlchemy + PyMySQL
-- **数据处理**: pandas + openpyxl
-- **文件操作**: pathlib + os
+---
 
-## 许可证
-
-本项目采用 MIT 许可证。
-
-## 更新记录
-
-- **v1.0.0** (2024-12-28)
-  - 初始版本发布
-  - 实现文件扫描、分类、数据库存储等核心功能
+**⭐ 如果这个项目对您有帮助，请给我们一个星标！**
