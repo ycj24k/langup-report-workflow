@@ -16,11 +16,13 @@ from database_manager import DatabaseManager
 from gui_interface import ResearchFileGUI
 from cache_manager import FileCache, DatabaseVersionManager, IncrementalScanner
 from config import DATABASE_CONFIG
+from pathlib import Path
 
 
 class ResearchFileManager:
     def __init__(self):
-        self.file_scanner = FileScanner()
+        # 关闭自动OCR，只在手动解析时进行
+        self.file_scanner = FileScanner(enable_pdf_ocr=True, enable_ppt_ocr=True, use_gpu=False, use_milvus=False)
         self.database_manager = DatabaseManager()
         self.gui = None
         
@@ -83,9 +85,9 @@ class ResearchFileManager:
         try:
             print("开始扫描文件...")
             
-            # 使用增量扫描
+            # 使用增量扫描，但不进行自动OCR处理
             if self.incremental_scanner:
-                print("使用增量扫描模式...")
+                print("使用增量扫描模式（不进行自动OCR）...")
                 scan_result = self.incremental_scanner.scan_incremental()
                 
                 # 合并所有文件
@@ -99,12 +101,38 @@ class ResearchFileManager:
                     print(f"  更新: {len(scan_result['updated_files'])} 个")
                     print(f"  未变化: {len(scan_result['unchanged_files'])} 个")
                     
+                    # 对新增/更新的PDF和PPT触发OCR/解析
+                    try:
+                        changed_paths = {f.get('file_path') for f in (scan_result['new_files'] + scan_result['updated_files'])}
+                        processed_files = []
+                        for file_info in all_files:
+                            ext = str(file_info.get('extension', '')).lower()
+                            path = file_info.get('file_path')
+                            # 仅对新增/更新的文件做处理，节省时间
+                            if path in changed_paths:
+                                if ext == '.pdf' and getattr(self.file_scanner, 'enable_pdf_ocr', False):
+                                    file_info = self.file_scanner._process_pdf_file(file_info)
+                                elif ext in ['.ppt', '.pptx'] and getattr(self.file_scanner, 'enable_ppt_ocr', False):
+                                    # 仅当启用了PPT处理时才处理
+                                    if hasattr(self.file_scanner, '_process_ppt_file'):
+                                        file_info = self.file_scanner._process_ppt_file(file_info)
+                            processed_files.append(file_info)
+                        all_files = processed_files
+                        print("新增/更新文件的OCR与解析已完成")
+                    except Exception as e:
+                        print(f"自动OCR触发失败: {e}")
+                    
                     # 自动导出到Excel文件
                     try:
                         filename = f"scanned_files_{datetime.now().year}.xlsx"
+                        # 确保Excel文件保存在data目录中
+                        data_dir = Path("data")
+                        data_dir.mkdir(exist_ok=True)
+                        excel_path = data_dir / filename
+                        
                         df = pd.DataFrame(all_files)
-                        df.to_excel(filename, index=False, engine='openpyxl')
-                        print(f"扫描结果已自动导出到: {filename}")
+                        df.to_excel(excel_path, index=False, engine='openpyxl')
+                        print(f"扫描结果已自动导出到: {excel_path}")
                     except Exception as e:
                         print(f"自动导出Excel失败: {e}")
                     
@@ -223,30 +251,63 @@ class ResearchFileManager:
             # 热重载不可用不影响主流程
             pass
 
-    def parse_files(self, files_data):
+    def parse_files(self, file_indices):
         """
-        调用OCR模块解析文件内容，返回 {file_path: {parsed: bool, category: str|None, tags: str|None, notes: str|None}}
+        GUI触发的解析：对选中的文件执行OCR/解析与向量化
+        传入的 file_indices 为要解析的文件索引列表
         """
-        # 尝试导入用户的OCR模块：期望提供 parse_files(files: List[dict]) -> Dict[str, dict]
         try:
-            from ocr_parser import parse_files as user_parse_files
-        except Exception:
-            # 兜底：提供一个占位实现，标记为未解析
-            def user_parse_files(files):
-                result = {}
-                for f in files:
-                    fp = f.get('file_path')
-                    result[fp] = {"parsed": False}
-                return result
-        
-        try:
-            result = user_parse_files(files_data)
-            if not isinstance(result, dict):
-                raise ValueError("OCR接口返回类型应为dict")
-            return result
+            if not file_indices:
+                print("没有选择要解析的文件")
+                return False
+            
+            print(f"开始解析 {len(file_indices)} 个选中的文件...")
+            
+            # 获取GUI中的文件数据
+            if not self.gui or not hasattr(self.gui, 'files_data') or not self.gui.files_data:
+                print("错误: GUI中没有文件数据")
+                return False
+            
+            # 将GUI中的文件数据传递给文件扫描器
+            self.file_scanner.scanned_files = self.gui.files_data.copy()
+            print(f"已将 {len(self.file_scanner.scanned_files)} 个文件数据传递给文件扫描器")
+            # 读取解析模式（快速/精细）并应用
+            if hasattr(self.gui, 'get_parse_mode'):
+                mode = self.gui.get_parse_mode()
+                print(f"应用解析模式: {mode}")
+                if hasattr(self.file_scanner, 'set_parse_mode'):
+                    self.file_scanner.set_parse_mode(mode)
+            
+            # 使用文件扫描器的解析方法
+            results = self.file_scanner.parse_selected_files(file_indices)
+            
+            # 检查是否有错误（OCR模块未启用等）
+            if results.get('status') == 'error':
+                print(f"解析失败: {results['message']}")
+                return False
+            
+            print(f"解析完成: 成功 {results['success']} 个，失败 {results['failed']} 个")
+            
+            # 显示详细结果
+            for detail in results['details']:
+                if detail['status'] == 'success':
+                    print(f"✓ {detail['file_name']}: {detail['message']}")
+                elif detail['status'] == 'failed':
+                    print(f"✗ {detail['file_name']}: {detail['message']}")
+                elif detail['status'] == 'skipped':
+                    print(f"- {detail['file_name']}: {detail['message']}")
+            
+            # 将更新后的文件数据同步回GUI
+            if results['success'] > 0 or results['failed'] > 0:
+                self.gui.files_data = self.file_scanner.scanned_files.copy()
+                print("已将更新后的文件数据同步回GUI")
+            
+            return results['success'] > 0
+            
         except Exception as e:
-            print(f"解析失败: {e}")
-            raise
+            print(f"解析过程中出错: {e}")
+            traceback.print_exc()
+            return False
 
     def upload_to_database(self, files_data):
         """
@@ -257,14 +318,16 @@ class ResearchFileManager:
                 print("没有数据需要上传")
                 return False
             
-            # 上传限制：仅允许 parsed=True 的文件
+            # 上传限制：仅允许已解析且符合要求的文件
             filtered = []
             for f in files_data:
-                if f.get('parsed') is True:
+                if (f.get('parsing_status') == '已解析' and 
+                    f.get('compliance_status') == '符合'):
                     filtered.append(f)
+            
             if not filtered:
-                print("未找到已解析的文件，已阻止上传")
-                messagebox.showwarning("限制", "只有解析成功的文件才可上传，请先执行解析")
+                print("未找到符合条件的文件，已阻止上传")
+                messagebox.showwarning("限制", "只有已解析且状态为'符合'的文件才可上传，请先执行解析")
                 return False
             
             # 检查数据库连接

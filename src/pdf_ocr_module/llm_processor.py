@@ -7,13 +7,8 @@ from loguru import logger
 from typing import List, Dict, Optional
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
-try:
-    from langchain_openai import ChatOpenAI
-except ImportError:
-    try:
-        from langchain_community.chat_models import ChatOpenAI
-    except ImportError:
-        ChatOpenAI = None
+# 延迟导入，避免启动时的导入错误
+ChatOpenAI = None
 
 from .config import LLM_CONFIG, PROMPTS
 
@@ -27,7 +22,20 @@ class LLMProcessor:
         
     def _init_llm(self):
         """初始化LLM模型"""
+        global ChatOpenAI
         try:
+            # 延迟导入ChatOpenAI
+            if ChatOpenAI is None:
+                try:
+                    from langchain_openai import ChatOpenAI
+                except ImportError:
+                    try:
+                        from langchain_community.chat_models import ChatOpenAI
+                    except ImportError:
+                        logger.warning("ChatOpenAI不可用，LLM功能将被禁用")
+                        self.llm = None
+                        return
+            
             self.llm = ChatOpenAI(
                 model_name=LLM_CONFIG["model_name"],
                 base_url=LLM_CONFIG["base_url"],

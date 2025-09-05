@@ -4,28 +4,34 @@
 
 import json
 import pickle
+import warnings
 from pathlib import Path
 from typing import List, Dict, Optional, Union
 from loguru import logger
 
+# 抑制pkg_resources弃用警告
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
+
+try:
+    # 优先使用新包
+    from langchain_ollama import OllamaEmbeddings as _OllamaEmbeddings
+    OLLAMA_AVAILABLE = True
+except Exception:
+    try:
+        # 兼容旧包
+        from langchain_community.embeddings import OllamaEmbeddings as _OllamaEmbeddings
+        OLLAMA_AVAILABLE = True
+    except Exception:
+        OLLAMA_AVAILABLE = False
+
 try:
     from pymilvus import MilvusClient
-    from langchain_community.embeddings import OllamaEmbeddings
     from langchain_core.documents import Document
     from langchain_community.vectorstores import Milvus
     MILVUS_AVAILABLE = True
-    OLLAMA_AVAILABLE = True
-except ImportError:
+except Exception:
     MILVUS_AVAILABLE = False
-    OLLAMA_AVAILABLE = False
     logger.warning("Milvus相关库未安装，向量存储功能将不可用")
-
-# 定义Document类作为备用
-if not MILVUS_AVAILABLE:
-    class Document:
-        def __init__(self, page_content: str, metadata: dict = None):
-            self.page_content = page_content
-            self.metadata = metadata or {}
 
 # 定义Document类作为备用
 if not MILVUS_AVAILABLE:
@@ -54,12 +60,12 @@ class VectorStore:
     def _init_embeddings(self):
         """初始化向量化模型"""
         try:
-            if OLLAMA_AVAILABLE and OllamaEmbeddings:
-                self.embedding_model = OllamaEmbeddings(
+            if OLLAMA_AVAILABLE:
+                self.embedding_model = _OllamaEmbeddings(
                     model=VECTOR_CONFIG["model_name"],
                     num_gpu=VECTOR_CONFIG["num_gpu"]
                 )
-                logger.info("向量化模型初始化成功")
+                logger.info("Ollama Embeddings初始化成功")
             else:
                 logger.warning("OllamaEmbeddings不可用，将使用备用向量化方法")
                 self.embedding_model = None
@@ -328,8 +334,17 @@ class VectorStore:
         Returns:
             向量列表
         """
+        # 限制最大块数
+        try:
+            from .config import VECTOR_CONFIG
+            max_chunks = int(VECTOR_CONFIG.get("max_chunks", 0))
+        except Exception:
+            max_chunks = 0
+        if max_chunks and len(texts) > max_chunks:
+            logger.info(f"向量化文本过多({len(texts)}>={max_chunks})，仅取前{max_chunks}项以提速")
+            texts = texts[:max_chunks]
+
         if not self.embedding_model:
-            # 使用简化的向量化方法
             return self._simple_vectorization(texts)
         
         try:

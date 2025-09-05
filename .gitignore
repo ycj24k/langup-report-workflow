@@ -1,0 +1,75 @@
+# ---- Python 缓存与构建产物 ----
+__pycache__/
+*.py[cod]
+*$py.class
+.build/
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- 编辑器与系统文件 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- 日志与临时文件 ----
+*.log
+logs/
+.tmp/
+.temp/
+*.tmp
+~$*
+
+# ---- 测试/工具缓存 ----
+.pytest_cache/
+.coverage*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 本地环境配置 ----
+.env
+.env.*
+*.local
+
+# ---- 生成的数据与缓存（按项目约定 data/ 存放导出/生成文件） ----
+# 提交目录结构可用 data/.gitkeep 保留空目录
+/data/**
+!/data/.gitkeep
+
+# 常见导出文件（放置在根或其他目录时也忽略）
+*.xlsx
+*.xls
+file_cache.pkl
+
+# ---- OCR中间结果与缓存 ----
+# GUI/解析生成的OCR JSON、向量缓存等
+**/ocr/*.json
+**/cache/**
+
+# ---- 输出目录（渲染/导出/临时生成） ----
+output/
+outputs/
+out/
+run/
+results/
+reports/
+artifacts/
+
+# ---- 运行时与临时下载 ----
+*.bak
+*.swp
+*.swo
+
+# ---- 不忽略模型与代码 ----
+# 注意：自定义模型位于 models/，需要提交，故不忽略
+# models/

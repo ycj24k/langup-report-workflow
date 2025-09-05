@@ -15,7 +15,10 @@ from config import NETWORK_PATH
 
 class FileCache:
     def __init__(self, cache_file="file_cache.pkl"):
-        self.cache_file = cache_file
+        # 确保缓存文件保存在data目录中
+        data_dir = Path("data")
+        data_dir.mkdir(exist_ok=True)
+        self.cache_file = data_dir / cache_file
         self.cache_data = {
             'files': {},  # 文件路径 -> 文件信息
             'last_scan': None,  # 最后扫描时间

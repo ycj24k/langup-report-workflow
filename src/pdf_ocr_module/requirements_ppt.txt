@@ -1,0 +1,12 @@
+# PPT处理器依赖包
+# 用于处理PPT和PPTX文件
+
+# PPTX文件处理
+python-pptx>=0.6.21
+
+# PPT文件处理（Windows COM接口）
+pywin32>=306; sys_platform == "win32"
+
+# 通用依赖
+loguru>=0.7.0
+pathlib2>=2.3.7; python_version < "3.4"

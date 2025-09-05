@@ -12,7 +12,8 @@ import pandas as pd
 from datetime import datetime
 import json
 import threading
-from config import FILE_CATEGORIES, IMPORTANCE_LEVELS, PRESET_TAGS
+import os
+from config import FILE_CATEGORIES, IMPORTANCE_LEVELS, PRESET_TAGS, COMPLIANCE_STATUS, PARSING_STATUS
 
 
 class ResearchFileGUI:
@@ -97,8 +98,7 @@ class ResearchFileGUI:
             bootstyle="primary",
             command=self.scan_files
         )
-        
-        
+        self.scan_btn.pack(side=LEFT, padx=(0, 10))
         
         # 导出按钮
         self.export_btn = ttk_bs.Button(
@@ -107,14 +107,7 @@ class ResearchFileGUI:
             bootstyle="secondary",
             command=self.export_excel
         )
-        
-        # 上传按钮（上传已选择项）
-        self.upload_btn = ttk_bs.Button(
-            self.toolbar_frame,
-            text="上传到数据库(已选)",
-            bootstyle="success",
-            command=self.upload_selected_to_database
-        )
+        self.export_btn.pack(side=LEFT, padx=(0, 10))
         
         # 解析按钮（解析已选择项，OCR并自动分类打标签）
         self.parse_btn = ttk_bs.Button(
@@ -123,6 +116,25 @@ class ResearchFileGUI:
             bootstyle="warning",
             command=self.parse_selected_files
         )
+        self.parse_btn.pack(side=LEFT, padx=(0, 10))
+        
+        # 解析提示标签
+        self.parse_hint_label = ttk_bs.Label(
+            self.toolbar_frame,
+            text="注意：只有状态为'符合'的文件才能解析",
+            bootstyle="secondary",
+            font=('微软雅黑', 9)
+        )
+        self.parse_hint_label.pack(side=LEFT, padx=(10, 0))
+        
+        # 上传按钮（上传已选择项）
+        self.upload_btn = ttk_bs.Button(
+            self.toolbar_frame,
+            text="上传到数据库(已选)",
+            bootstyle="success",
+            command=self.upload_selected_to_database
+        )
+        self.upload_btn.pack(side=LEFT, padx=(0, 10))
         
         # 进度条
         self.progress = ttk_bs.Progressbar(
@@ -182,6 +194,36 @@ class ResearchFileGUI:
         self.status_combo.pack(side=LEFT)
         self.status_combo.bind('<<ComboboxSelected>>', self.on_status_filter_change)
         
+        # 符合状态筛选
+        compliance_frame = ttk_bs.Frame(flex_container)
+        compliance_frame.pack(side=LEFT, padx=(0, 10), pady=2)
+        ttk_bs.Label(compliance_frame, text="符合状态:").pack(side=LEFT, padx=(0, 5))
+        self.compliance_filter_var = tk.StringVar(value="全部")
+        self.compliance_filter_combo = ttk_bs.Combobox(
+            compliance_frame,
+            textvariable=self.compliance_filter_var,
+            values=["全部", "符合", "不符合", "待定"],
+            state="readonly",
+            width=8
+        )
+        self.compliance_filter_combo.pack(side=LEFT)
+        self.compliance_filter_combo.bind('<<ComboboxSelected>>', self.on_compliance_filter_change)
+        
+        # 解析状态筛选
+        parsing_frame = ttk_bs.Frame(flex_container)
+        parsing_frame.pack(side=LEFT, padx=(0, 10), pady=2)
+        ttk_bs.Label(parsing_frame, text="解析状态:").pack(side=LEFT, padx=(0, 5))
+        self.parsing_var = tk.StringVar(value="全部")
+        self.parsing_combo = ttk_bs.Combobox(
+            parsing_frame,
+            textvariable=self.parsing_var,
+            values=["全部", "未解析", "解析中", "已解析", "解析失败"],
+            state="readonly",
+            width=8
+        )
+        self.parsing_combo.pack(side=LEFT)
+        self.parsing_combo.bind('<<ComboboxSelected>>', self.on_parsing_filter_change)
+        
         # 搜索按钮
         self.search_btn = ttk_bs.Button(
             flex_container,
@@ -213,7 +255,7 @@ class ResearchFileGUI:
         self.file_list_frame = ttk_bs.Frame(self.left_frame)
         
         # 创建Treeview（选择列在最左边，序号在第二列）
-        columns = ("选择", "序号", "文件名", "大小(MB)", "创建时间", "修改时间", "访问时间", "状态", "分类", "重要性")
+        columns = ("选择", "序号", "文件名", "大小(MB)", "创建时间", "修改时间", "访问时间", "状态", "符合状态", "解析状态", "分类", "重要性")
         self.file_tree = ttk.Treeview(
             self.file_list_frame,
             columns=columns,
@@ -265,16 +307,14 @@ class ResearchFileGUI:
         self.file_tree.column("修改时间", width=110, minwidth=90, anchor=CENTER)
         self.file_tree.column("访问时间", width=110, minwidth=90, anchor=CENTER)
         self.file_tree.column("状态", width=80, minwidth=60, anchor=CENTER)
+        self.file_tree.column("符合状态", width=80, minwidth=60, anchor=CENTER)
+        self.file_tree.column("解析状态", width=80, minwidth=60, anchor=CENTER)
         self.file_tree.column("分类", width=100, minwidth=80, anchor=CENTER)
         self.file_tree.column("重要性", width=80, minwidth=60, anchor=CENTER)
         
         # 设置标题（“全选”显示为复选框样式，根据状态动态更新）
         for col in columns:
-            if col == "选择":
-                # 初始标题文本，后续在 refresh_file_list 中根据状态更新
-                self.file_tree.heading(col, text="☐", anchor=CENTER, command=self.toggle_select_all_current_page)
-            else:
-                self.file_tree.heading(col, text=col, anchor=CENTER)
+            self.file_tree.heading(col, text=col, anchor=CENTER)
         
         # 滚动条
         self.tree_scroll = ttk.Scrollbar(
@@ -290,6 +330,72 @@ class ResearchFileGUI:
         self.file_tree.bind('<Motion>', self.on_tree_motion)
         self.file_tree.bind('<Leave>', self.on_tree_leave)
         
+        # 分页控件 - 使用flex布局，放在表格底部
+        pagination_frame = ttk_bs.Frame(self.file_list_frame)
+        pagination_frame.pack(side=BOTTOM, fill=X, pady=(5, 0))
+        
+        # 使用flex布局，左侧留空，右侧放置分页控件
+        # 左侧弹性空间
+        left_spacer = ttk_bs.Frame(pagination_frame)
+        left_spacer.pack(side=LEFT, fill=X, expand=True)
+        
+        # 右侧分页控件容器
+        pagination_controls = ttk_bs.Frame(pagination_frame)
+        pagination_controls.pack(side=RIGHT)
+        
+        # 分页按钮
+        self.prev_page_btn = ttk_bs.Button(
+            pagination_controls,
+            text="上一页",
+            bootstyle="secondary",
+            command=self.prev_page
+        )
+        self.prev_page_btn.pack(side=LEFT, padx=(0, 5))
+        
+        # 分页信息
+        ttk_bs.Label(pagination_controls, text="分页:").pack(side=LEFT, padx=(0, 5))
+        
+        self.page_var = tk.IntVar(value=1)
+        self.page_spinbox = ttk_bs.Spinbox(
+            pagination_controls,
+            from_=1,
+            to=1,
+            textvariable=self.page_var,
+            width=8
+        )
+        self.page_spinbox.pack(side=LEFT, padx=(0, 5))
+        
+        # 绑定分页输入框的事件
+        self.page_spinbox.bind('<Return>', self.on_page_change)  # 回车键
+        self.page_spinbox.bind('<FocusOut>', self.on_page_change)  # 失去焦点
+        self.page_spinbox.bind('<KeyRelease>', self.on_page_input_change)  # 输入时实时验证
+        
+        ttk_bs.Label(pagination_controls, text="/").pack(side=LEFT, padx=(0, 5))
+        
+        self.total_pages_var = tk.StringVar(value="1")
+        ttk_bs.Label(pagination_controls, textvariable=self.total_pages_var).pack(side=LEFT, padx=(0, 10))
+        
+        # 每页条数选择
+        ttk_bs.Label(pagination_controls, text="每页:").pack(side=LEFT)
+        self.page_size_var = tk.StringVar(value=str(self.page_size))
+        self.page_size_combo = ttk_bs.Combobox(
+            pagination_controls,
+            textvariable=self.page_size_var,
+            values=["20", "50", "100"],
+            state="readonly",
+            width=5
+        )
+        self.page_size_combo.pack(side=LEFT, padx=(5, 10))
+        self.page_size_combo.bind('<<ComboboxSelected>>', self.on_page_size_change)
+        
+        self.next_page_btn = ttk_bs.Button(
+            pagination_controls,
+            text="下一页",
+            bootstyle="secondary",
+            command=self.next_page
+        )
+        self.next_page_btn.pack(side=LEFT)
+        
         # 右侧详情区域
         self.right_frame = ttk_bs.LabelFrame(
             self.content_frame,
@@ -297,7 +403,7 @@ class ResearchFileGUI:
             padding=10
         )
         # 设置固定宽度
-        self.right_frame.configure(width=500)
+        self.right_frame.configure(width=600)
         
         # 文件信息区域
         self.info_frame = ttk_bs.LabelFrame(
@@ -315,7 +421,9 @@ class ResearchFileGUI:
             ("扩展名", "extension"),
             ("创建时间", "creation_date"),
             ("修改时间", "modification_date"),
-            ("访问时间", "access_date")
+            ("访问时间", "access_date"),
+            ("符合状态", "compliance_status"),
+            ("解析状态", "parsing_status")
         ]
         
         for i, (label_text, field_name) in enumerate(info_fields):
@@ -325,7 +433,7 @@ class ResearchFileGUI:
             self.info_labels[field_name] = ttk_bs.Label(
                 self.info_frame,
                 text="",
-                wraplength=400
+                wraplength=500
             )
             self.info_labels[field_name].grid(
                 row=i, column=1, sticky=W, pady=2
@@ -369,9 +477,40 @@ class ResearchFileGUI:
         )
         self.add_category_btn.pack(side=LEFT, padx=(5, 0))
         
+        # 符合状态选择
+        ttk_bs.Label(self.classify_frame, text="符合状态:").grid(
+            row=1, column=0, sticky=W, padx=(0, 10), pady=5
+        )
+        self.compliance_var = tk.StringVar()
+        self.compliance_combo = ttk_bs.Combobox(
+            self.classify_frame,
+            textvariable=self.compliance_var,
+            values=COMPLIANCE_STATUS,
+            state="readonly",
+            width=20
+        )
+        self.compliance_combo.grid(row=1, column=1, sticky=W, pady=5)
+        self.compliance_combo.bind('<<ComboboxSelected>>', self.on_compliance_change)
+        
+        # 不符合原因输入（当状态为"不符合"时显示）
+        ttk_bs.Label(self.classify_frame, text="不符合原因:").grid(
+            row=2, column=0, sticky=W, padx=(0, 10), pady=5
+        )
+        self.compliance_reason_var = tk.StringVar()
+        self.compliance_reason_entry = ttk_bs.Entry(
+            self.classify_frame,
+            textvariable=self.compliance_reason_var,
+            width=20
+        )
+        self.compliance_reason_entry.grid(row=2, column=1, sticky=W, pady=5)
+        self.compliance_reason_entry.bind('<KeyRelease>', self.on_compliance_reason_change)
+        
+        # 初始时隐藏不符合原因输入框
+        self.compliance_reason_entry.grid_remove()
+        
         # 重要性选择
         ttk_bs.Label(self.classify_frame, text="重要性:").grid(
-            row=1, column=0, sticky=W, padx=(0, 10), pady=5
+            row=3, column=0, sticky=W, padx=(0, 10), pady=5
         )
         self.importance_var = tk.StringVar()
         self.importance_combo = ttk_bs.Combobox(
@@ -381,17 +520,17 @@ class ResearchFileGUI:
             state="readonly",
             width=20
         )
-        self.importance_combo.grid(row=1, column=1, sticky=W, pady=5)
+        self.importance_combo.grid(row=3, column=1, sticky=W, pady=5)
         self.importance_combo.bind('<<ComboboxSelected>>', self.on_importance_change)
         
         # 标签选择
         ttk_bs.Label(self.classify_frame, text="标签:").grid(
-            row=2, column=0, sticky=W+N, padx=(0, 10), pady=5
+            row=4, column=0, sticky=W+N, padx=(0, 10), pady=5
         )
         
         # 标签选择框架
         tags_frame = ttk_bs.Frame(self.classify_frame)
-        tags_frame.grid(row=2, column=1, sticky=W, pady=5)
+        tags_frame.grid(row=4, column=1, sticky=W, pady=5)
         
         # 标签输入框
         self.tags_var = tk.StringVar()
@@ -425,7 +564,7 @@ class ResearchFileGUI:
         
         # 备注输入
         ttk_bs.Label(self.classify_frame, text="备注:").grid(
-            row=3, column=0, sticky=W+N, padx=(0, 10), pady=5
+            row=5, column=0, sticky=W+N, padx=(0, 10), pady=5
         )
         self.notes_text = tk.Text(
             self.classify_frame,
@@ -433,12 +572,12 @@ class ResearchFileGUI:
             height=4,
             wrap=tk.WORD
         )
-        self.notes_text.grid(row=3, column=1, sticky=W, pady=5)
+        self.notes_text.grid(row=5, column=1, sticky=W, pady=5)
         self.notes_text.bind('<KeyRelease>', self.on_notes_change)
         
         # 操作按钮
         self.action_frame = ttk_bs.Frame(self.classify_frame)
-        self.action_frame.grid(row=4, column=0, columnspan=2, pady=10)
+        self.action_frame.grid(row=6, column=0, columnspan=2, pady=10)
         
         self.save_btn = ttk_bs.Button(
             self.action_frame,
@@ -464,82 +603,106 @@ class ResearchFileGUI:
         )
         self.prev_btn.pack(side=LEFT)
         
-        # 分页控件
-        pagination_frame = ttk_bs.Frame(self.classify_frame)
-        pagination_frame.grid(row=5, column=0, columnspan=2, pady=10)
+
         
-        ttk_bs.Label(pagination_frame, text="分页:").pack(side=LEFT, padx=(0, 5))
-        
-        self.page_var = tk.IntVar(value=1)
-        self.page_spinbox = ttk_bs.Spinbox(
-            pagination_frame,
-            from_=1,
-            to=1,
-            textvariable=self.page_var,
-            width=8,
-            command=self.on_page_change
+        # OCR结果显示区域
+        self.ocr_frame = ttk_bs.LabelFrame(
+            self.right_frame,
+            text="OCR识别结果",
+            padding=10
         )
-        self.page_spinbox.pack(side=LEFT, padx=(0, 5))
         
-        ttk_bs.Label(pagination_frame, text="/").pack(side=LEFT, padx=(0, 5))
-        
-        self.total_pages_var = tk.StringVar(value="1")
-        ttk_bs.Label(pagination_frame, textvariable=self.total_pages_var).pack(side=LEFT, padx=(0, 10))
-        
-        # 每页条数选择
-        ttk_bs.Label(pagination_frame, text="每页:").pack(side=LEFT)
-        self.page_size_var = tk.StringVar(value=str(self.page_size))
-        self.page_size_combo = ttk_bs.Combobox(
-            pagination_frame,
-            textvariable=self.page_size_var,
-            values=["20", "50", "100"],
-            state="readonly",
-            width=5
+        # OCR状态标签
+        self.ocr_status_label = ttk_bs.Label(
+            self.ocr_frame,
+            text="未进行OCR识别",
+            bootstyle="secondary"
         )
-        self.page_size_combo.pack(side=LEFT, padx=(5, 10))
-        self.page_size_combo.bind('<<ComboboxSelected>>', self.on_page_size_change)
+        self.ocr_status_label.pack(anchor=W, pady=(0, 5))
         
-        self.prev_page_btn = ttk_bs.Button(
-            pagination_frame,
-            text="上一页",
-            bootstyle="secondary",
-            command=self.prev_page
-        )
-        self.prev_page_btn.pack(side=LEFT, padx=(0, 5))
+        # 创建OCR内容标签页
+        self.ocr_notebook = ttk_bs.Notebook(self.ocr_frame)
+        self.ocr_notebook.pack(fill=BOTH, expand=True, pady=(0, 5))
         
-        self.next_page_btn = ttk_bs.Button(
-            pagination_frame,
-            text="下一页",
-            bootstyle="secondary",
-            command=self.next_page
-        )
-        self.next_page_btn.pack(side=LEFT)
+        # 文本内容标签页
+        self.text_tab = ttk_bs.Frame(self.ocr_notebook)
+        self.ocr_notebook.add(self.text_tab, text="文本内容")
         
-        # 选择/上传辅助按钮
-        self.select_all_btn = ttk_bs.Button(
-            pagination_frame,
-            text="全选本页",
-            bootstyle="info",
-            command=self.select_all_current_page
+        self.ocr_content_text = tk.Text(
+            self.text_tab,
+            width=60,
+            height=8,
+            wrap=tk.WORD,
+            state=tk.DISABLED
         )
-        self.select_all_btn.pack(side=LEFT, padx=(20, 5))
+        self.ocr_content_text.pack(fill=BOTH, expand=True, padx=5, pady=5)
         
-        self.clear_select_btn = ttk_bs.Button(
-            pagination_frame,
-            text="清空选择",
-            bootstyle="secondary",
-            command=self.clear_selection_current_page
-        )
-        self.clear_select_btn.pack(side=LEFT)
+        # 摘要标签页
+        self.summary_tab = ttk_bs.Frame(self.ocr_notebook)
+        self.ocr_notebook.add(self.summary_tab, text="摘要分析")
         
-        # 批量上传按钮（当前页已选）
-        self.batch_upload_btn = ttk_bs.Button(
-            pagination_frame,
-            text="批量上传(本页已选)",
-            bootstyle="warning",
-            command=self.batch_upload_current_page
+        # 基础摘要
+        ttk_bs.Label(self.summary_tab, text="基础摘要:").pack(anchor=W, padx=5, pady=(5, 0))
+        self.ocr_summary_text = tk.Text(
+            self.summary_tab,
+            width=60,
+            height=4,
+            wrap=tk.WORD,
+            state=tk.DISABLED
         )
-        self.batch_upload_btn.pack(side=LEFT, padx=(20, 0))
+        self.ocr_summary_text.pack(fill=X, padx=5, pady=(0, 5))
+        
+        # 混合摘要
+        ttk_bs.Label(self.summary_tab, text="结构化摘要:").pack(anchor=W, padx=5, pady=(5, 0))
+        self.ocr_hybrid_text = tk.Text(
+            self.summary_tab,
+            width=60,
+            height=4,
+            wrap=tk.WORD,
+            state=tk.DISABLED
+        )
+        self.ocr_hybrid_text.pack(fill=X, padx=5, pady=(0, 5))
+        
+        # 关键词标签页
+        self.keywords_tab = ttk_bs.Frame(self.ocr_notebook)
+        self.ocr_notebook.add(self.keywords_tab, text="关键词")
+        
+        self.ocr_keywords_text = tk.Text(
+            self.keywords_tab,
+            width=60,
+            height=6,
+            wrap=tk.WORD,
+            state=tk.DISABLED
+        )
+        self.ocr_keywords_text.pack(fill=BOTH, expand=True, padx=5, pady=5)
+        
+        # Markdown标签页
+        self.markdown_tab = ttk_bs.Frame(self.ocr_notebook)
+        self.ocr_notebook.add(self.markdown_tab, text="Markdown")
+        
+        self.ocr_markdown_text = tk.Text(
+            self.markdown_tab,
+            width=60,
+            height=8,
+            wrap=tk.WORD,
+            state=tk.DISABLED
+        )
+        self.ocr_markdown_text.pack(fill=BOTH, expand=True, padx=5, pady=5)
+        
+        # 段落摘要标签页
+        self.parts_tab = ttk_bs.Frame(self.ocr_notebook)
+        self.ocr_notebook.add(self.parts_tab, text="段落摘要")
+        
+        self.ocr_parts_text = tk.Text(
+            self.parts_tab,
+            width=60,
+            height=8,
+            wrap=tk.WORD,
+            state=tk.DISABLED
+        )
+        self.ocr_parts_text.pack(fill=BOTH, expand=True, padx=5, pady=5)
+        
+
         
         # 统计信息区域
         self.stats_frame = ttk_bs.LabelFrame(
@@ -578,6 +741,7 @@ class ResearchFileGUI:
         
         self.scan_btn.pack(side=LEFT, padx=(0, 10))
         self.export_btn.pack(side=LEFT, padx=(0, 10))
+        self.parse_btn.pack(side=LEFT, padx=(0, 10))
         self.upload_btn.pack(side=LEFT, padx=(0, 10))
         
         self.progress.pack(side=RIGHT, padx=(10, 0))
@@ -600,6 +764,7 @@ class ResearchFileGUI:
         
         self.info_frame.pack(fill=X, pady=(0, 10))
         self.classify_frame.pack(fill=X, pady=(0, 10))
+        self.ocr_frame.pack(fill=BOTH, expand=True, pady=(0, 10))
         self.stats_frame.pack(fill=BOTH, expand=True)
         
         self.stats_text.pack(side=LEFT, fill=BOTH, expand=True)
@@ -638,10 +803,16 @@ class ResearchFileGUI:
         """
         self.progress.stop()
         self.files_data = files
+        
         # 默认状态：未变化（unchanged）
         for f in self.files_data:
             if not f.get('status'):
                 f['status'] = 'unchanged'
+            # 确保有默认的符合状态和解析状态
+            if not f.get('compliance_status'):
+                f['compliance_status'] = '待定'
+            if not f.get('parsing_status'):
+                f['parsing_status'] = '未解析'
         self.selected_paths.clear()
         self.apply_filters(reset_page=True)
         self.update_statistics()
@@ -746,7 +917,7 @@ class ResearchFileGUI:
     
     def parse_selected_files(self):
         """
-        解析已选择的文件（PDF OCR处理）
+        解析已选择的文件（OCR识别和向量化处理）
         """
         if not self.files_data:
             messagebox.showwarning("警告", "没有数据可解析")
@@ -762,25 +933,56 @@ class ResearchFileGUI:
             messagebox.showwarning("警告", "未找到可解析的文件")
             return
         
-        # 过滤出PDF文件
-        pdf_files = [f for f in selected_records if f.get('extension', '').lower() == '.pdf']
-        if not pdf_files:
-            messagebox.showwarning("警告", "所选文件中没有PDF文件")
+        # 过滤出支持的文件类型（PDF、PPT、PPTX）
+        supported_files = [f for f in selected_records 
+                          if f.get('extension', '').lower() in ['.pdf', '.ppt', '.pptx']]
+        if not supported_files:
+            messagebox.showwarning("警告", "所选文件中没有支持解析的文件类型（PDF、PPT、PPTX）")
             return
         
+        # 检查文件状态
+        valid_files = []
+        invalid_files = []
+        for f in supported_files:
+            if f.get('compliance_status') == '符合':
+                valid_files.append(f)
+            else:
+                invalid_files.append(f)
+        
+        if not valid_files:
+            messagebox.showwarning("警告", "所选文件中没有状态为'符合'的文件，无法进行解析")
+            return
+        
+        if invalid_files:
+            invalid_names = [f.get('file_name') for f in invalid_files]
+            messagebox.showwarning("警告", f"以下文件状态不是'符合'，将被跳过：\n{', '.join(invalid_names)}")
+        
         if self.on_parse_files:
-            confirm_msg = f"确定要解析所选的 {len(pdf_files)} 个PDF文件吗？\n这将进行OCR识别和向量化处理。"
+            # 获取有效文件在files_data中的索引
+            file_indices = []
+            for f in valid_files:
+                try:
+                    idx = self.files_data.index(f)
+                    file_indices.append(idx)
+                except ValueError:
+                    continue
+            
+            if not file_indices:
+                messagebox.showwarning("警告", "无法确定文件索引，解析失败")
+                return
+            
+            confirm_msg = f"确定要解析所选的 {len(valid_files)} 个文件吗？\n这将进行OCR识别和向量化处理。"
             
             result = messagebox.askyesno("确认", confirm_msg)
             if not result:
                 return
             
             self.progress.start()
-            self.status_label.config(text="正在解析PDF文件...")
+            self.status_label.config(text="正在解析文件...")
             
             def parse_thread():
                 try:
-                    success = self.on_parse_files(pdf_files)
+                    success = self.on_parse_files(file_indices)
                     self.root.after(0, self.on_parse_complete, success)
                 except Exception as e:
                     self.root.after(0, self.on_parse_error, str(e))
@@ -796,12 +998,15 @@ class ResearchFileGUI:
         self.progress.stop()
         if success:
             self.status_label.config(text="解析成功")
-            messagebox.showinfo("成功", "PDF文件解析完成")
+            messagebox.showinfo("成功", "文件解析完成")
             # 刷新文件列表以显示更新后的状态
             self.refresh_file_list()
+            # 如果当前有选中的文件，刷新其详情显示
+            if 0 <= self.current_file_index < len(self.files_data):
+                self.load_file_details()
         else:
             self.status_label.config(text="解析失败")
-            messagebox.showerror("错误", "PDF文件解析失败")
+            messagebox.showerror("错误", "文件解析失败")
     
     def on_parse_error(self, error_msg):
         """
@@ -809,7 +1014,7 @@ class ResearchFileGUI:
         """
         self.progress.stop()
         self.status_label.config(text="解析失败")
-        messagebox.showerror("错误", f"解析PDF文件时出错：{error_msg}")
+        messagebox.showerror("错误", f"解析文件时出错：{error_msg}")
     
     def refresh_file_list(self):
         """
@@ -824,7 +1029,7 @@ class ResearchFileGUI:
         
         if not current_page_data:
             # 空数据提示
-            self.file_tree.insert('', 'end', values=('', '', '（无数据）', '', '', '', '', '', '', ''))
+            self.file_tree.insert('', 'end', values=('', '', '（无数据）', '', '', '', '', '', '', '', '', ''))
             self.update_pagination()
             return
         
@@ -859,10 +1064,14 @@ class ResearchFileGUI:
             # 更大的Checkbox符号
             sel_mark = '☑' if file_data.get('file_path') in self.selected_paths else '☐'
             
+            # 获取新的状态字段
+            compliance_status = file_data.get('compliance_status', '待定')
+            parsing_status = file_data.get('parsing_status', '未解析')
+            
             self.file_tree.insert(
                 '',
                 'end',
-                values=(sel_mark, global_index, file_name, file_size, creation_date, mod_date, access_date, status, category, importance),
+                values=(sel_mark, global_index, file_name, file_size, creation_date, mod_date, access_date, status, compliance_status, parsing_status, category, importance),
                 tags=("even" if i % 2 == 0 else "odd",)
             )
         
@@ -870,16 +1079,7 @@ class ResearchFileGUI:
         self.update_pagination()
         
         # 刷新表头“全选”复选框文本
-        try:
-            current = self.get_current_page_data()
-            current_paths = {rec.get('file_path') for rec in current if rec.get('file_path')}
-            if current and current_paths and current_paths.issubset(self.selected_paths):
-                header_text = "☑"
-            else:
-                header_text = "☐"
-            self.file_tree.heading("选择", text=header_text)
-        except Exception:
-            pass
+
     
     def clear_filters(self):
         """
@@ -887,6 +1087,8 @@ class ResearchFileGUI:
         """
         self.search_var.set('')
         self.status_var.set('全部')
+        self.compliance_filter_var.set('全部')
+        self.parsing_var.set('全部')
         self.apply_filters(reset_page=True)
     
     def apply_filters(self, *args, reset_page=False):
@@ -896,12 +1098,31 @@ class ResearchFileGUI:
         keyword = (self.search_var.get() or '').lower().strip()
         status_map = {"全部": "all", "新增": "new", "更新": "updated", "未变化": "unchanged"}
         status_value = status_map.get(self.status_var.get(), "all")
+        compliance_value = self.compliance_filter_var.get()
+        parsing_value = self.parsing_var.get()
         
         base = self.files_data
+        
+
         filtered = []
+        
+        # 如果没有数据，直接返回
+        if not base:
+            self.filtered_data = []
+            if reset_page:
+                self.current_page = 1
+            self.refresh_file_list()
+            return
+            
         for f in base:
             # 状态过滤（f['status'] 使用英文代码）
             if status_value != 'all' and (f.get('status') != status_value):
+                continue
+            # 符合状态过滤
+            if compliance_value != '全部' and (f.get('compliance_status') != compliance_value):
+                continue
+            # 解析状态过滤
+            if parsing_value != '全部' and (f.get('parsing_status') != parsing_value):
                 continue
             # 关键词过滤
             if keyword:
@@ -921,6 +1142,18 @@ class ResearchFileGUI:
     def on_status_filter_change(self, event):
         """
         状态筛选改变事件
+        """
+        self.apply_filters(reset_page=True)
+    
+    def on_compliance_filter_change(self, event):
+        """
+        符合状态筛选改变事件
+        """
+        self.apply_filters(reset_page=True)
+    
+    def on_parsing_filter_change(self, event):
+        """
+        解析状态筛选改变事件
         """
         self.apply_filters(reset_page=True)
     
@@ -1009,21 +1242,7 @@ class ResearchFileGUI:
             self.file_tree.item(self._hover_row_id, tags=("even" if idx % 2 == 0 else "odd",))
         self._hover_row_id = None
     
-    def toggle_select_all_current_page(self):
-        """
-        表头点击：切换本页全选/全不选
-        """
-        current = self.get_current_page_data()
-        if not current:
-            return
-        current_paths = {rec.get('file_path') for rec in current if rec.get('file_path')}
-        if current_paths.issubset(self.selected_paths):
-            # 全不选
-            self.selected_paths -= current_paths
-        else:
-            # 全选
-            self.selected_paths |= current_paths
-        self.refresh_file_list()
+
     
     def on_file_select(self, event):
         """
@@ -1069,9 +1288,153 @@ class ResearchFileGUI:
             self.importance_var.set(file_data.get('importance', ''))
             self.tags_var.set(file_data.get('tags', ''))
             
+            # 更新符合状态
+            self.compliance_var.set(file_data.get('compliance_status', '待定'))
+            self.compliance_reason_var.set(file_data.get('compliance_reason', ''))
+            
+            # 根据符合状态显示/隐藏原因输入框
+            if file_data.get('compliance_status') == '不符合':
+                self.compliance_reason_entry.grid()
+            else:
+                self.compliance_reason_entry.grid_remove()
+            
             # 更新备注
             self.notes_text.delete(1.0, tk.END)
             self.notes_text.insert(1.0, file_data.get('notes', ''))
+            
+            # 更新OCR结果显示
+            self.update_ocr_display(file_data)
+    
+    def update_ocr_display(self, file_data):
+        """
+        更新OCR结果显示
+        """
+        # 检查是否有OCR数据
+        if file_data.get('ocr_data_path') and os.path.exists(file_data.get('ocr_data_path')):
+            try:
+                with open(file_data.get('ocr_data_path'), 'r', encoding='utf-8') as f:
+                    ocr_data = json.load(f)
+                
+                # 更新OCR状态
+                parsing_status = file_data.get('parsing_status', '未解析')
+                if parsing_status == '已解析':
+                    self.ocr_status_label.config(text="OCR识别完成", bootstyle="success")
+                elif parsing_status == '解析中':
+                    self.ocr_status_label.config(text="OCR识别中...", bootstyle="warning")
+                elif parsing_status == '解析失败':
+                    self.ocr_status_label.config(text="OCR识别失败", bootstyle="danger")
+                else:
+                    self.ocr_status_label.config(text="未进行OCR识别", bootstyle="secondary")
+                
+                # 更新OCR内容
+                self.ocr_content_text.config(state=tk.NORMAL)
+                self.ocr_content_text.delete(1.0, tk.END)
+                text_content = file_data.get('text_content', '')
+                if text_content:
+                    # 显示前1000个字符的预览
+                    preview = text_content[:1000] + ('...' if len(text_content) > 1000 else '')
+                    self.ocr_content_text.insert(1.0, preview)
+                else:
+                    self.ocr_content_text.insert(1.0, "无文本内容")
+                self.ocr_content_text.config(state=tk.DISABLED)
+                
+                # 更新基础摘要
+                self.ocr_summary_text.config(state=tk.NORMAL)
+                self.ocr_summary_text.delete(1.0, tk.END)
+                summary = file_data.get('summary', '')
+                if summary:
+                    self.ocr_summary_text.insert(1.0, summary)
+                else:
+                    self.ocr_summary_text.insert(1.0, "无摘要")
+                self.ocr_summary_text.config(state=tk.DISABLED)
+                
+                # 更新混合摘要
+                self.ocr_hybrid_text.config(state=tk.NORMAL)
+                self.ocr_hybrid_text.delete(1.0, tk.END)
+                hybrid_summary = file_data.get('hybrid_summary', '')
+                if hybrid_summary:
+                    self.ocr_hybrid_text.insert(1.0, hybrid_summary)
+                else:
+                    self.ocr_hybrid_text.insert(1.0, "无结构化摘要")
+                self.ocr_hybrid_text.config(state=tk.DISABLED)
+                
+                # 更新关键词
+                self.ocr_keywords_text.config(state=tk.NORMAL)
+                self.ocr_keywords_text.delete(1.0, tk.END)
+                keywords = file_data.get('keywords', [])
+                if keywords:
+                    if isinstance(keywords, list):
+                        keywords_text = '\n'.join([f"• {kw}" for kw in keywords])
+                    else:
+                        keywords_text = str(keywords)
+                    self.ocr_keywords_text.insert(1.0, keywords_text)
+                else:
+                    self.ocr_keywords_text.insert(1.0, "无关键词")
+                self.ocr_keywords_text.config(state=tk.DISABLED)
+                
+                # 更新Markdown内容
+                self.ocr_markdown_text.config(state=tk.NORMAL)
+                self.ocr_markdown_text.delete(1.0, tk.END)
+                markdown_content = file_data.get('markdown_content', '')
+                if markdown_content:
+                    self.ocr_markdown_text.insert(1.0, markdown_content)
+                else:
+                    self.ocr_markdown_text.insert(1.0, "无Markdown内容")
+                self.ocr_markdown_text.config(state=tk.DISABLED)
+                
+                # 更新段落摘要
+                self.ocr_parts_text.config(state=tk.NORMAL)
+                self.ocr_parts_text.delete(1.0, tk.END)
+                part_summaries = file_data.get('part_summaries', [])
+                if part_summaries:
+                    parts_text = ""
+                    for part in part_summaries:
+                        parts_text += f"段落 {part.get('paragraph_index', '?')}:\n"
+                        parts_text += f"  原文长度: {part.get('original_length', 0)} 字符\n"
+                        parts_text += f"  摘要: {part.get('summary', '无摘要')}\n\n"
+                    self.ocr_parts_text.insert(1.0, parts_text)
+                else:
+                    self.ocr_parts_text.insert(1.0, "无段落摘要")
+                self.ocr_parts_text.config(state=tk.DISABLED)
+                
+            except Exception as e:
+                self.ocr_status_label.config(text=f"OCR数据读取失败: {e}", bootstyle="danger")
+                self.ocr_content_text.config(state=tk.NORMAL)
+                self.ocr_content_text.delete(1.0, tk.END)
+                self.ocr_content_text.insert(1.0, f"读取OCR数据时出错: {e}")
+                self.ocr_content_text.config(state=tk.DISABLED)
+        else:
+            # 没有OCR数据
+            self.ocr_status_label.config(text="未进行OCR识别", bootstyle="secondary")
+            self.ocr_content_text.config(state=tk.NORMAL)
+            self.ocr_content_text.delete(1.0, tk.END)
+            self.ocr_content_text.insert(1.0, "该文件尚未进行OCR识别")
+            self.ocr_content_text.config(state=tk.DISABLED)
+            
+            self.ocr_summary_text.config(state=tk.NORMAL)
+            self.ocr_summary_text.delete(1.0, tk.END)
+            self.ocr_summary_text.insert(1.0, "无摘要")
+            self.ocr_summary_text.config(state=tk.DISABLED)
+            
+            self.ocr_hybrid_text.config(state=tk.NORMAL)
+            self.ocr_hybrid_text.delete(1.0, tk.END)
+            self.ocr_hybrid_text.insert(1.0, "无结构化摘要")
+            self.ocr_hybrid_text.config(state=tk.DISABLED)
+            
+            self.ocr_keywords_text.config(state=tk.NORMAL)
+            self.ocr_keywords_text.delete(1.0, tk.END)
+            self.ocr_keywords_text.insert(1.0, "无关键词")
+            self.ocr_keywords_text.config(state=tk.DISABLED)
+            
+            self.ocr_markdown_text.config(state=tk.NORMAL)
+            self.ocr_markdown_text.delete(1.0, tk.END)
+            self.ocr_markdown_text.insert(1.0, "无Markdown内容")
+            self.ocr_markdown_text.config(state=tk.DISABLED)
+            
+            self.ocr_parts_text.config(state=tk.NORMAL)
+            self.ocr_parts_text.delete(1.0, tk.END)
+            self.ocr_parts_text.insert(1.0, "无段落摘要")
+            self.ocr_parts_text.config(state=tk.DISABLED)
     
     def on_category_change(self, event):
         """
@@ -1090,6 +1453,34 @@ class ResearchFileGUI:
             self.files_data[self.current_file_index]['importance'] = self.importance_var.get()
             self.unsaved_changes = True
             self.refresh_file_list()
+    
+    def on_compliance_change(self, event):
+        """
+        符合状态改变事件
+        """
+        if 0 <= self.current_file_index < len(self.files_data):
+            new_status = self.compliance_var.get()
+            self.files_data[self.current_file_index]['compliance_status'] = new_status
+            
+            # 如果状态改为"不符合"，显示原因输入框
+            if new_status == '不符合':
+                self.compliance_reason_entry.grid()
+            else:
+                self.compliance_reason_entry.grid_remove()
+                # 清空原因
+                self.compliance_reason_var.set('')
+                self.files_data[self.current_file_index]['compliance_reason'] = ''
+            
+            self.unsaved_changes = True
+            self.refresh_file_list()
+    
+    def on_compliance_reason_change(self, event):
+        """
+        不符合原因改变事件
+        """
+        if 0 <= self.current_file_index < len(self.files_data):
+            self.files_data[self.current_file_index]['compliance_reason'] = self.compliance_reason_var.get()
+            self.unsaved_changes = True
     
     def on_tags_change(self, event):
         """
@@ -1271,12 +1662,21 @@ class ResearchFileGUI:
         self.total_pages_var.set(str(self.total_pages))
         self.page_spinbox.configure(to=self.total_pages)
         
+        # 确保分页输入框显示正确的值，但不改变焦点
+        current_focus = self.root.focus_get()
+        self.page_spinbox.delete(0, tk.END)
+        self.page_spinbox.insert(0, str(self.current_page))
+        
         # 更新按钮状态
         self.prev_page_btn.configure(state="normal" if self.current_page > 1 else "disabled")
         self.next_page_btn.configure(state="normal" if self.current_page < self.total_pages else "disabled")
         
+        # 恢复原来的焦点
+        if current_focus and current_focus != self.page_spinbox:
+            current_focus.focus_set()
+        
         # 更新批量上传按钮状态
-        self.batch_upload_btn.configure(state="normal" if self.filtered_data else "disabled")
+
     
     def get_current_page_data(self):
         """
@@ -1290,15 +1690,52 @@ class ResearchFileGUI:
         end_index = start_index + self.page_size
         return data[start_index:end_index]
     
-    def on_page_change(self):
+    def on_page_input_change(self, event=None):
+        """
+        分页输入框输入变化事件（实时验证）
+        """
+        try:
+            # 获取当前输入值
+            input_text = self.page_spinbox.get()
+            if not input_text.strip():
+                return
+            
+            # 尝试转换为数字
+            new_page = int(input_text)
+            
+            # 验证范围
+            if new_page < 1:
+                self.page_spinbox.delete(0, tk.END)
+                self.page_spinbox.insert(0, "1")
+            elif new_page > self.total_pages:
+                self.page_spinbox.delete(0, tk.END)
+                self.page_spinbox.insert(0, str(self.total_pages))
+        except ValueError:
+            # 如果不是有效数字，清空输入框
+            self.page_spinbox.delete(0, tk.END)
+            self.page_spinbox.insert(0, str(self.current_page))
+    
+    def on_page_change(self, event=None):
         """
         页码改变事件
         """
-        new_page = self.page_var.get()
-        if 1 <= new_page <= self.total_pages and new_page != self.current_page:
-            self.current_page = new_page
-            self.refresh_file_list()
-            self.update_pagination()
+        try:
+            new_page = int(self.page_spinbox.get())
+            if 1 <= new_page <= self.total_pages and new_page != self.current_page:
+                self.current_page = new_page
+                self.page_var.set(self.current_page)
+                self.refresh_file_list()
+                self.update_pagination()
+                # 确保分页输入框失去焦点
+                self.root.focus_set()
+            else:
+                # 如果输入无效，恢复到当前页
+                self.page_spinbox.delete(0, tk.END)
+                self.page_spinbox.insert(0, str(self.current_page))
+        except ValueError:
+            # 如果转换失败，恢复到当前页
+            self.page_spinbox.delete(0, tk.END)
+            self.page_spinbox.insert(0, str(self.current_page))
     
     def on_page_size_change(self, event):
         """
@@ -1322,6 +1759,8 @@ class ResearchFileGUI:
             self.page_var.set(self.current_page)
             self.refresh_file_list()
             self.update_pagination()
+            # 确保分页输入框失去焦点
+            self.root.focus_set()
     
     def next_page(self):
         """
@@ -1332,28 +1771,14 @@ class ResearchFileGUI:
             self.page_var.set(self.current_page)
             self.refresh_file_list()
             self.update_pagination()
+            # 确保分页输入框失去焦点
+            self.root.focus_set()
     
-    def select_all_current_page(self):
-        """
-        全选当前页
-        """
-        for rec in self.get_current_page_data():
-            path = rec.get('file_path')
-            if path:
-                self.selected_paths.add(path)
-        self.refresh_file_list()
+
     
-    def clear_selection_current_page(self):
-        """
-        清空当前页选择
-        """
-        for rec in self.get_current_page_data():
-            path = rec.get('file_path')
-            if path and path in self.selected_paths:
-                self.selected_paths.remove(path)
-        self.refresh_file_list()
+
     
-    def batch_upload_current_page(self):
+
         """
         批量上传当前页“已选择”的数据（最多100条；如未选择则默认本页全部）
         """
@@ -1398,7 +1823,7 @@ class ResearchFileGUI:
             
             threading.Thread(target=upload_thread, daemon=True).start()
     
-    def on_batch_upload_complete(self, success, count):
+
         """
         批量上传完成回调
         """
@@ -1410,7 +1835,7 @@ class ResearchFileGUI:
             self.status_label.config(text="批量上传失败")
             messagebox.showerror("错误", "批量上传失败")
     
-    def on_batch_upload_error(self, error_msg):
+
         """
         批量上传错误回调
         """

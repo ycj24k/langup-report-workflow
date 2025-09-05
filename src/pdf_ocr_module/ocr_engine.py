@@ -6,7 +6,8 @@ import cv2
 import numpy as np
 from PIL import Image
 from loguru import logger
-from paddleocr import PaddleOCR
+# 延迟导入 PaddleOCR，避免启动阶段卡顿
+PaddleOCR = None
 from ultralytics import YOLO
 from typing import List, Dict, Tuple, Optional
 from pathlib import Path
@@ -25,38 +26,80 @@ class OCREngine:
             use_gpu: 是否使用GPU
         """
         self.use_gpu = use_gpu
+        self.ocr = None
         self._init_ocr()
         self._init_layout_detector()
+        self.mode = "快速"
+
+    def set_mode(self, mode: str):
+        """设置解析模式影响提速与召回"""
+        if mode not in ("快速", "精细"):
+            return
+        self.mode = mode
+        # 基于模式调整参数
+        try:
+            if mode == "快速":
+                LAYOUT_CONFIG["conf_threshold"] = max(0.35, LAYOUT_CONFIG["conf_threshold"])  # 略提阈值
+                self.fast_imgsz = 768
+                self.use_angle_cls = False
+                self.direct_conf = 0.25
+            else:
+                LAYOUT_CONFIG["conf_threshold"] = 0.22
+                self.fast_imgsz = 1024
+                self.use_angle_cls = True
+                self.direct_conf = 0.12
+        except Exception:
+            pass
         
     def _init_ocr(self):
         """初始化PaddleOCR"""
         try:
+            global PaddleOCR
+            if PaddleOCR is None:
+                logger.info("正在加载PaddleOCR(首次加载可能较慢，请耐心等待)...")
+                from paddleocr import PaddleOCR as _PaddleOCR
+                PaddleOCR = _PaddleOCR
             self.ocr = PaddleOCR(
                 use_gpu=self.use_gpu,
                 det_limit_side_len=OCR_CONFIG["det_limit_side_len"],
                 layout=OCR_CONFIG["layout"],
                 table=OCR_CONFIG["table"],
                 det_db_unclip_ratio=OCR_CONFIG["det_db_unclip_ratio"],
-                show_log=OCR_CONFIG["show_log"]
+                show_log=OCR_CONFIG["show_log"],
+                use_angle_cls=True
             )
             logger.info("PaddleOCR初始化成功")
         except Exception as e:
             logger.error(f"PaddleOCR初始化失败: {e}")
-            raise
+            self.ocr = None
     
     def _init_layout_detector(self):
         """初始化布局检测器"""
         try:
             model_path = Path(LAYOUT_CONFIG["model_path"])
+            # 优先加载已训练的.pt 权重，其次避免直接加载yaml导致的backbone错误
             if model_path.exists():
-                self.layout_model = YOLO(str(model_path))
-                logger.info("布局检测模型加载成功")
+                if model_path.suffix.lower() == ".pt":
+                    self.layout_model = YOLO(str(model_path))
+                    logger.info(f"布局检测模型(.pt)加载成功: {model_path}")
+                elif model_path.suffix.lower() in {".yaml", ".yml"}:
+                    logger.warning("检测到的是模型配置(yaml)，非已训练权重，将回退到通用检测权重models/yolov8n.pt")
+                    local_fallback = Path(__file__).parent / "models" / "yolov8n.pt"
+                    self.layout_model = YOLO(str(local_fallback)) if local_fallback.exists() else YOLO("yolov8n.pt")
+                    logger.info(f"已回退并加载yolov8n.pt 作为布局检测模型: {local_fallback if local_fallback.exists() else 'ultralytics内置'}")
             else:
-                logger.warning("布局检测模型文件不存在，将使用默认检测")
-                self.layout_model = None
+                logger.warning("布局检测模型文件不存在，尝试从models目录加载yolov8n.pt")
+                local_fallback = Path(__file__).parent / "models" / "yolov8n.pt"
+                self.layout_model = YOLO(str(local_fallback)) if local_fallback.exists() else YOLO("yolov8n.pt")
+                logger.info(f"已回退并加载yolov8n.pt 作为布局检测模型: {local_fallback if local_fallback.exists() else 'ultralytics内置'}")
         except Exception as e:
-            logger.warning(f"布局检测模型加载失败: {e}")
-            self.layout_model = None
+            logger.warning(f"布局检测模型加载失败: {e}，将回退到通用检测模型")
+            try:
+                self.layout_model = YOLO("yolov8n.pt")
+                logger.info("已回退并加载yolov8n.pt 作为布局检测模型")
+            except Exception as _:
+                logger.warning("通用检测模型加载失败，将使用默认规则检测")
+                self.layout_model = None
     
     def detect_layout(self, image_path: str) -> List[Dict]:
         """
@@ -72,10 +115,13 @@ class OCREngine:
             return self._default_layout_detection(image_path)
         
         try:
+            # 使用更适合专用模型的参数
             results = self.layout_model.predict(
                 image_path,
                 conf=LAYOUT_CONFIG["conf_threshold"],
-                iou=LAYOUT_CONFIG["iou_threshold"]
+                iou=LAYOUT_CONFIG["iou_threshold"],
+                imgsz=getattr(self, 'fast_imgsz', 1024),
+                verbose=False
             )
             
             layout_results = []
@@ -94,6 +140,7 @@ class OCREngine:
                             'category_id': cls
                         })
             
+            logger.info(f"布局检测完成，检测到 {len(layout_results)} 个区域")
             return layout_results
             
         except Exception as e:
@@ -167,7 +214,7 @@ class OCREngine:
                 cropped.save(temp_path)
                 image_path = temp_path
             
-            result = self.ocr.ocr(image_path, cls=True)
+            result = self.ocr.ocr(image_path, cls=getattr(self, 'use_angle_cls', True))
             
             if bbox and Path(temp_path).exists():
                 Path(temp_path).unlink()  # 删除临时文件
@@ -181,7 +228,8 @@ class OCREngine:
                 if line and len(line) >= 2:
                     text = line[1][0]  # 文字内容
                     confidence = line[1][1]  # 置信度
-                    if confidence > 0.5:  # 过滤低置信度结果
+                    min_conf = 0.5 if self.mode == "快速" else 0.3
+                    if confidence > min_conf:
                         texts.append(text)
             
             return "\n".join(texts)
@@ -189,6 +237,57 @@ class OCREngine:
         except Exception as e:
             logger.error(f"文字提取失败: {e}")
             return ""
+    
+    def extract_text_direct(self, image_path: str, confidence_threshold: float = 0.1) -> List[Dict]:
+        """
+        直接对整张图像进行OCR识别，不依赖布局检测
+        
+        Args:
+            image_path: 图像路径
+            confidence_threshold: 置信度阈值，默认0.1（较低阈值以获取更多文本）
+            
+        Returns:
+            OCR识别结果列表
+        """
+        try:
+            # 使用PaddleOCR直接识别整张图像
+            result = self.ocr.ocr(image_path, cls=getattr(self, 'use_angle_cls', True))
+            
+            if not result or not result[0]:
+                logger.warning(f"直接OCR未识别到任何文本: {image_path}")
+                return []
+            
+            texts = []
+            for line in result[0]:
+                if len(line) >= 2:
+                    bbox = line[0]  # 边界框坐标
+                    text_info = line[1]  # 文本内容和置信度
+                    
+                    if len(text_info) >= 2:
+                        text = text_info[0]  # 识别的文本
+                        confidence = text_info[1]  # 置信度
+                        
+                        # 过滤置信度过低的文本（模式可覆盖）
+                        min_conf = getattr(self, 'direct_conf', confidence_threshold)
+                        if confidence >= min_conf:
+                            # 转换边界框格式
+                            x1, y1 = bbox[0]
+                            x2, y2 = bbox[2]
+                            
+                            texts.append({
+                                'text': text,
+                                'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                                'confidence': float(confidence),
+                                'category': 'text',
+                                'category_id': 0
+                            })
+            
+            logger.info(f"直接OCR识别完成，提取到 {len(texts)} 个文本区域")
+            return texts
+            
+        except Exception as e:
+            logger.error(f"直接OCR识别失败: {e}")
+            return []
     
     def process_page(self, image_path: str) -> Dict:
         """
@@ -227,6 +326,36 @@ class OCREngine:
                 elif category == 'table':
                     table_regions.append(region)
             
+            # 如果布局检测没有找到足够的文本区域，使用直接OCR
+            if len(text_regions) < (0 if self.mode == "快速" else 1):
+                logger.info("布局检测文本区域不足，使用直接OCR...")
+                direct_text = self.extract_text_direct(image_path)
+                if direct_text:
+                    # 将直接OCR的结果作为一个整体文本区域
+                    text_regions.append({
+                        'bbox': None,  # 整个页面
+                        'text': "\n".join([t['text'] for t in direct_text]),
+                        'category': 'text',
+                        'confidence': 0.8
+                    })
+                    logger.info(f"直接OCR提取到 {len(direct_text)} 个文本区域")
+                else:
+                    logger.warning("直接OCR也没有提取到文本内容")
+            elif len(text_regions) < (2 if self.mode == "精细" else 1):
+                logger.info("布局检测文本区域较少，尝试直接OCR补充...")
+                direct_text = self.extract_text_direct(image_path)
+                if direct_text:
+                    # 检查直接OCR是否提供了更多内容
+                    existing_text = "\n".join([tr['text'] for tr in text_regions])
+                    if len(direct_text) > len(existing_text) * 1.5:  # 如果直接OCR提供的内容明显更多
+                        text_regions.append({
+                            'bbox': None,
+                            'text': "\n".join([t['text'] for t in direct_text]),
+                            'category': 'text',
+                            'confidence': 0.7
+                        })
+                        logger.info(f"直接OCR补充提取到 {len(direct_text)} 个文本区域")
+            
             return {
                 'text_regions': text_regions,
                 'figure_regions': figure_regions,
@@ -236,6 +365,24 @@ class OCREngine:
             
         except Exception as e:
             logger.error(f"页面处理失败: {e}")
+            # 出错时尝试直接OCR
+            try:
+                direct_text = self.extract_text_direct(image_path)
+                if direct_text:
+                    return {
+                        'text_regions': [{
+                            'bbox': None,
+                            'text': "\n".join([t['text'] for t in direct_text]),
+                            'category': 'text',
+                            'confidence': 0.7
+                        }],
+                        'figure_regions': [],
+                        'table_regions': [],
+                        'layout_results': []
+                    }
+            except Exception as direct_e:
+                logger.error(f"直接OCR也失败: {direct_e}")
+            
             return {
                 'text_regions': [],
                 'figure_regions': [],

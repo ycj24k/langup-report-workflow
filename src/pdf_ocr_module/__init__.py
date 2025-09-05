@@ -1,12 +1,11 @@
+# -*- coding: utf-8 -*-
 """
-PDF OCR 向量化模块
-集成PDF上传、OCR识别、布局检测、向量化存储等功能
+PDF OCR模块 - 集成PDF和PPT文档处理功能
 """
 
 from .pdf_processor import PDFProcessor
-from .ocr_engine import OCREngine
+from .ppt_processor import PPTProcessor
 from .vector_store import VectorStore
-from .api_server import PDFOCRServer
+from .llm_processor import LLMProcessor
 
-__version__ = "1.0.0"
-__all__ = ["PDFProcessor", "OCREngine", "VectorStore", "PDFOCRServer"]
+__all__ = ['PDFProcessor', 'PPTProcessor', 'VectorStore', 'LLMProcessor']
