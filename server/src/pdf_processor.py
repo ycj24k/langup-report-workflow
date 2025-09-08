@@ -15,7 +15,10 @@ from uuid import uuid4
 
 from .config import OUTPUT_DIR, PICKLES_DIR, IMAGE_CONFIG, PROMPTS, REMOTE_OCR_CONFIG
 from .ocr_engine import OCREngine
-from .llm_processor import LLMProcessor
+try:
+    from .llm_processor import LLMProcessor
+except Exception:
+    LLMProcessor = None
 
 
 class PDFProcessor:
@@ -34,7 +37,8 @@ class PDFProcessor:
         else:
             self.ocr_engine = OCREngine(use_gpu=use_gpu)
         
-        self.llm_processor = LLMProcessor()
+        # 服务器端只负责OCR，LLM可选
+        self.llm_processor = LLMProcessor() if LLMProcessor else None
         self.mode = "快速"
         # 基础分辨率（可根据模式覆盖）
         self.target_resolution = IMAGE_CONFIG["target_resolution"]
@@ -176,6 +180,29 @@ class PDFProcessor:
                     # 进度更新
                     progress = (page_num + 1) / total_pages * 100
                     logger.info(f"处理进度: {progress:.1f}%")
+
+                # 兜底策略：若整篇未提取到任何文本，逐页以高分辨率直接OCR一次
+                if not any((t.get('text') or '').strip() for t in all_texts):
+                    logger.warning("整篇未提取到文本，执行兜底直扫(高分辨率)...")
+                    for page_num in range(total_pages):
+                        page = pdf[page_num]
+                        try:
+                            direct_img_path = self._generate_page_image(
+                                page, page_num, output_path, IMAGE_CONFIG["high_resolution"]
+                            )
+                            direct_texts = self.ocr_engine.extract_text_direct(direct_img_path)
+                            if direct_texts:
+                                merged = "\n".join([t['text'] for t in direct_texts if t.get('text')])
+                                if merged.strip():
+                                    all_texts.append({
+                                        'page': page_num + 1,
+                                        'text': merged,
+                                        'bbox': None,
+                                        'category': 'text',
+                                        'confidence': 0.7
+                                    })
+                        except Exception as e:
+                            logger.error(f"兜底直扫失败(第{page_num+1}页): {e}")
                 
                 # 生成摘要和关键词
                 summary_result = self._generate_summary(all_texts)
@@ -192,7 +219,11 @@ class PDFProcessor:
                     'keywords': summary_result.get('keywords', []),
                     'hybrid_summary': summary_result.get('hybrid_summary', ''),
                     'markdown_content': summary_result.get('markdown_content', ''),
-                    'part_summaries': summary_result.get('part_summaries', [])
+                    'part_summaries': summary_result.get('part_summaries', []),
+                    'categories': summary_result.get('categories', []),
+                    'category_descriptions': summary_result.get('category_descriptions', {}),
+                    'category_confidence': summary_result.get('category_confidence', 0.0),
+                    'tags': summary_result.get('tags', [])
                 }
                 
                 # 保存到pickle文件
@@ -343,14 +374,37 @@ class PDFProcessor:
                     'keywords': [],
                     'hybrid_summary': '无内容可分析',
                     'markdown_content': '无内容可转换',
-                    'part_summaries': []
+                    'part_summaries': [],
+                    'categories': [],
+                    'category_descriptions': {},
+                    'category_confidence': 0.0,
+                    'tags': []
                 }
             
-            # 使用LLM生成各种类型的内容
-            summary = self.llm_processor.generate_summary(all_text)
-            keywords = self.llm_processor.extract_keywords(all_text)
-            hybrid_summary = self.llm_processor.generate_hybrid_summary(all_text)
-            markdown_content = self.llm_processor.convert_to_markdown(all_text)
+            # 使用LLM生成各种类型的内容（若不可用则返回占位）
+            if self.llm_processor:
+                summary = self.llm_processor.generate_summary(all_text)
+                keywords = self.llm_processor.extract_keywords(all_text)
+                hybrid_summary = self.llm_processor.generate_hybrid_summary(all_text)
+                markdown_content = self.llm_processor.convert_to_markdown(all_text)
+            else:
+                summary = ''
+                keywords = []
+                hybrid_summary = ''
+                markdown_content = ''
+            
+            # 分类与打标签
+            try:
+                if self.llm_processor:
+                    categories = self.llm_processor.classify(all_text)
+                    tags = self.llm_processor.generate_tags(all_text)
+                else:
+                    categories = {"categories": [], "confidence": 0.0}
+                    tags = []
+            except Exception as e:
+                logger.warning(f"分类/打标签阶段异常: {e}")
+                categories = {"categories": [], "confidence": 0.0}
+                tags = []
             
             # 生成段落摘要
             part_summaries = []
@@ -359,7 +413,7 @@ class PDFProcessor:
                 paragraphs = [p.strip() for p in all_text.split('\n\n') if p.strip()]
                 for i, paragraph in enumerate(paragraphs[:5]):  # 只处理前5段
                     if len(paragraph) > 100:  # 只对较长的段落生成摘要
-                        part_summary = self.llm_processor.generate_summary(paragraph)
+                        part_summary = self.llm_processor.generate_summary(paragraph) if self.llm_processor else ''
                         part_summaries.append({
                             'paragraph_index': i + 1,
                             'original_length': len(paragraph),
@@ -373,7 +427,11 @@ class PDFProcessor:
                 'keywords': keywords,
                 'hybrid_summary': hybrid_summary,
                 'markdown_content': markdown_content,
-                'part_summaries': part_summaries
+                'part_summaries': part_summaries,
+                'categories': [c.get('name') for c in categories.get('categories', [])],
+                'category_descriptions': {c.get('name'): c.get('description') for c in categories.get('categories', []) if c.get('name')},
+                'category_confidence': categories.get('confidence', 0.0),
+                'tags': tags
             }
             
         except Exception as e:
@@ -383,7 +441,11 @@ class PDFProcessor:
                 'keywords': [],
                 'hybrid_summary': '分析失败',
                 'markdown_content': '转换失败',
-                'part_summaries': []
+                'part_summaries': [],
+                'categories': [],
+                'category_descriptions': {},
+                'category_confidence': 0.0,
+                'tags': []
             }
     
     def _save_to_pickle(self, result: Dict, output_name: str):

@@ -14,6 +14,8 @@ import json
 import threading
 import os
 from config import FILE_CATEGORIES, IMPORTANCE_LEVELS, PRESET_TAGS, COMPLIANCE_STATUS, PARSING_STATUS
+import requests
+from pdf_ocr_module.config import REMOTE_OCR_CONFIG
 
 
 class ResearchFileGUI:
@@ -78,6 +80,12 @@ class ResearchFileGUI:
         self.on_database_upload = None
         self.on_parse_files = None
         
+        # 远程OCR服务配置
+        try:
+            self.server_url = REMOTE_OCR_CONFIG.get("server_url", "http://127.0.0.1:8888").rstrip('/')
+        except Exception:
+            self.server_url = "http://127.0.0.1:8888"
+        
         self.create_widgets()
         self.setup_layout()
         
@@ -126,6 +134,25 @@ class ResearchFileGUI:
             font=('微软雅黑', 9)
         )
         self.parse_hint_label.pack(side=LEFT, padx=(10, 0))
+        
+        # 服务端状态显示与检测按钮（工具栏右侧）
+        right_tools = ttk_bs.Frame(self.toolbar_frame)
+        right_tools.pack(side=RIGHT)
+        
+        self.server_status_label = ttk_bs.Label(
+            right_tools,
+            text="服务端: 未检测",
+            bootstyle="secondary"
+        )
+        self.server_status_label.pack(side=LEFT, padx=(0, 8))
+        
+        self.check_server_btn = ttk_bs.Button(
+            right_tools,
+            text="检测服务端",
+            bootstyle="info",
+            command=self.check_server_health
+        )
+        self.check_server_btn.pack(side=LEFT)
         
         # 上传按钮（上传已选择项）
         self.upload_btn = ttk_bs.Button(
@@ -770,6 +797,13 @@ class ResearchFileGUI:
         self.stats_text.pack(side=LEFT, fill=BOTH, expand=True)
         self.stats_scroll.pack(side=RIGHT, fill=Y)
         
+        # 启动后自动检测一次服务端，并每30秒轮询
+        try:
+            self.root.after(1000, self.check_server_health)
+            self.root.after(30000, self._schedule_server_check)
+        except Exception:
+            pass
+        
     def set_callbacks(self, scan_callback=None, upload_callback=None, clear_cache_callback=None, parse_callback=None):
         """
         设置回调函数
@@ -778,6 +812,44 @@ class ResearchFileGUI:
         self.on_database_upload = upload_callback
         self.on_clear_cache = clear_cache_callback
         self.on_parse_files = parse_callback
+    
+    def _schedule_server_check(self):
+        try:
+            self.check_server_health()
+        finally:
+            # 30秒后再次检测
+            self.root.after(30000, self._schedule_server_check)
+
+    def check_server_health(self):
+        """检测远程OCR服务健康状态并在GUI显示"""
+        def worker():
+            url = f"{self.server_url}/health"
+            try:
+                resp = requests.get(url, timeout=3)
+                ok = (resp.status_code == 200)
+                data = {}
+                try:
+                    data = resp.json() if ok else {}
+                except Exception:
+                    data = {}
+                if ok:
+                    gpu = data.get('gpu_info', {})
+                    torch_gpu = gpu.get('torch', {}).get('available', False)
+                    devices = gpu.get('torch', {}).get('devices', []) or []
+                    label = "服务端: 正常("
+                    if torch_gpu and devices:
+                        label += f"GPU:{devices[0]}"
+                        if len(devices) > 1:
+                            label += "+"
+                    else:
+                        label += "CPU"
+                    label += ")"
+                    self.root.after(0, lambda: self.server_status_label.config(text=label, bootstyle="success"))
+                else:
+                    self.root.after(0, lambda: self.server_status_label.config(text="服务端: 故障", bootstyle="danger"))
+            except Exception:
+                self.root.after(0, lambda: self.server_status_label.config(text="服务端: 不可达", bootstyle="danger"))
+        threading.Thread(target=worker, daemon=True).start()
         
     def scan_files(self):
         """

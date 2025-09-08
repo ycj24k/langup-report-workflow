@@ -52,21 +52,33 @@ class OCREngine:
             pass
         
     def _init_ocr(self):
-        """初始化PaddleOCR"""
+        """初始化PaddleOCR - 自动检测GPU可用性"""
         try:
             global PaddleOCR
             if PaddleOCR is None:
                 logger.info("正在加载PaddleOCR(首次加载可能较慢，请耐心等待)...")
                 from paddleocr import PaddleOCR as _PaddleOCR
                 PaddleOCR = _PaddleOCR
+            
+            # 检测GPU可用性
+            import torch
+            gpu_available = torch.cuda.is_available()
+            use_gpu = OCR_CONFIG.get("use_gpu", True) and gpu_available
+            
+            logger.info(f"PaddleOCR GPU配置: {'✅ 使用GPU' if use_gpu else '❌ 使用CPU（GPU不可用）'}")
+            
             self.ocr = PaddleOCR(
-                use_gpu=self.use_gpu,
+                use_gpu=use_gpu,  # 根据GPU可用性自动调整
                 det_limit_side_len=OCR_CONFIG["det_limit_side_len"],
                 layout=OCR_CONFIG["layout"],
                 table=OCR_CONFIG["table"],
                 det_db_unclip_ratio=OCR_CONFIG["det_db_unclip_ratio"],
                 show_log=OCR_CONFIG["show_log"],
-                use_angle_cls=True
+                lang=OCR_CONFIG.get("lang", "ch"),
+                use_angle_cls=OCR_CONFIG.get("use_angle_cls", True),
+                cls_threshold=OCR_CONFIG.get("cls_threshold", 0.9),
+                det_db_thresh=OCR_CONFIG.get("det_db_thresh", 0.3),
+                det_db_box_thresh=OCR_CONFIG.get("det_db_box_thresh", 0.5)
             )
             logger.info("PaddleOCR初始化成功")
         except Exception as e:
@@ -74,32 +86,64 @@ class OCREngine:
             self.ocr = None
     
     def _init_layout_detector(self):
-        """初始化布局检测器"""
+        """初始化布局检测器 - 优先使用专业模型，自动检测GPU可用性"""
         try:
-            model_path = Path(LAYOUT_CONFIG["model_path"])
-            # 优先加载已训练的.pt 权重，其次避免直接加载yaml导致的backbone错误
-            if model_path.exists():
-                if model_path.suffix.lower() == ".pt":
-                    self.layout_model = YOLO(str(model_path))
-                    logger.info(f"布局检测模型(.pt)加载成功: {model_path}")
-                elif model_path.suffix.lower() in {".yaml", ".yml"}:
-                    logger.warning("检测到的是模型配置(yaml)，非已训练权重，将回退到通用检测权重models/yolov8n.pt")
-                    local_fallback = Path(__file__).parent / "models" / "yolov8n.pt"
-                    self.layout_model = YOLO(str(local_fallback)) if local_fallback.exists() else YOLO("yolov8n.pt")
-                    logger.info(f"已回退并加载yolov8n.pt 作为布局检测模型: {local_fallback if local_fallback.exists() else 'ultralytics内置'}")
-            else:
-                logger.warning("布局检测模型文件不存在，尝试从models目录加载yolov8n.pt")
-                local_fallback = Path(__file__).parent / "models" / "yolov8n.pt"
-                self.layout_model = YOLO(str(local_fallback)) if local_fallback.exists() else YOLO("yolov8n.pt")
-                logger.info(f"已回退并加载yolov8n.pt 作为布局检测模型: {local_fallback if local_fallback.exists() else 'ultralytics内置'}")
+            # 检测GPU可用性
+            import torch
+            gpu_available = torch.cuda.is_available()
+            logger.info(f"GPU可用性检测: {'✅ 可用' if gpu_available else '❌ 不可用'}")
+            
+            # 优先使用专业模型 doclayout_yolo_ft.pt
+            primary_model = Path(LAYOUT_CONFIG["model_path"])
+            fallback_model = Path(LAYOUT_CONFIG.get("fallback_model", ""))
+            
+            # 尝试加载主模型
+            if primary_model.exists() and primary_model.suffix.lower() == ".pt":
+                try:
+                    self.layout_model = YOLO(str(primary_model))
+                    # 配置设备（GPU优先，如果不可用则使用CPU）
+                    if LAYOUT_CONFIG.get("use_gpu", True) and gpu_available:
+                        device = LAYOUT_CONFIG.get("device", "cuda")
+                        self.layout_model.to(device)
+                        logger.info(f"✅ 模型已配置到GPU设备: {device}")
+                    else:
+                        self.layout_model.to("cpu")
+                        logger.info("✅ 模型已配置到CPU设备（GPU不可用）")
+                    # 测试模型是否可用（跳过测试，直接使用）
+                    # self.layout_model.predict("test", verbose=False)  # 注释掉测试，避免文件不存在错误
+                    logger.info(f"✅ 专业布局检测模型加载成功: {primary_model}")
+                    return
+                except Exception as e:
+                    logger.warning(f"主模型 {primary_model} 加载失败: {e}")
+            
+            # 尝试加载备用专业模型
+            if fallback_model.exists() and fallback_model.suffix.lower() == ".pt":
+                try:
+                    self.layout_model = YOLO(str(fallback_model))
+                    # 配置设备（GPU优先，如果不可用则使用CPU）
+                    if LAYOUT_CONFIG.get("use_gpu", True) and gpu_available:
+                        device = LAYOUT_CONFIG.get("device", "cuda")
+                        self.layout_model.to(device)
+                        logger.info(f"✅ 模型已配置到GPU设备: {device}")
+                    else:
+                        self.layout_model.to("cpu")
+                        logger.info("✅ 模型已配置到CPU设备（GPU不可用）")
+                    # 测试模型是否可用（跳过测试，直接使用）
+                    # self.layout_model.predict("test", verbose=False)  # 注释掉测试，避免文件不存在错误
+                    logger.info(f"✅ 备用专业布局检测模型加载成功: {fallback_model}")
+                    return
+                except Exception as e:
+                    logger.warning(f"备用模型 {fallback_model} 加载失败: {e}")
+            
+            # 如果专业模型都不可用，报错
+            logger.error("❌ 专业布局检测模型不可用，请确保以下模型文件存在且可用:")
+            logger.error(f"   主模型: {primary_model}")
+            logger.error(f"   备用模型: {fallback_model}")
+            raise FileNotFoundError("专业布局检测模型不可用")
+            
         except Exception as e:
-            logger.warning(f"布局检测模型加载失败: {e}，将回退到通用检测模型")
-            try:
-                self.layout_model = YOLO("yolov8n.pt")
-                logger.info("已回退并加载yolov8n.pt 作为布局检测模型")
-            except Exception as _:
-                logger.warning("通用检测模型加载失败，将使用默认规则检测")
-                self.layout_model = None
+            logger.error(f"布局检测模型初始化失败: {e}")
+            self.layout_model = None
     
     def detect_layout(self, image_path: str) -> List[Dict]:
         """
@@ -145,6 +189,52 @@ class OCREngine:
             
         except Exception as e:
             logger.error(f"布局检测失败: {e}")
+            # 预测阶段失败时，尝试切换到备用模型并重试一次
+            try:
+                from pathlib import Path as _P
+                from ultralytics import YOLO as _Y
+                fallback = LAYOUT_CONFIG.get("fallback_model")
+                if fallback and _P(fallback).exists():
+                    logger.info("尝试切换到备用布局模型后重试预测...")
+                    self.layout_model = _Y(str(fallback))
+                    # 设备配置与初始化保持一致
+                    try:
+                        import torch as _torch
+                        if LAYOUT_CONFIG.get("use_gpu", True) and _torch.cuda.is_available():
+                            device = LAYOUT_CONFIG.get("device", "cuda")
+                            self.layout_model.to(device)
+                            logger.info(f"✅ 备用模型已配置到GPU设备: {device}")
+                        else:
+                            self.layout_model.to("cpu")
+                            logger.info("✅ 备用模型已配置到CPU设备（GPU不可用）")
+                    except Exception:
+                        self.layout_model.to("cpu")
+                    # 重试一次预测
+                    results = self.layout_model.predict(
+                        image_path,
+                        conf=LAYOUT_CONFIG["conf_threshold"],
+                        iou=LAYOUT_CONFIG["iou_threshold"],
+                        imgsz=getattr(self, 'fast_imgsz', 1024),
+                        verbose=False
+                    )
+                    layout_results = []
+                    for result in results:
+                        boxes = result.boxes
+                        if boxes is not None:
+                            for box in boxes:
+                                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                                conf = box.conf[0].cpu().numpy()
+                                cls = int(box.cls[0].cpu().numpy())
+                                layout_results.append({
+                                    'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                                    'confidence': float(conf),
+                                    'category': self._get_category_name(cls),
+                                    'category_id': cls
+                                })
+                    logger.info(f"备用模型布局检测完成，检测到 {len(layout_results)} 个区域")
+                    return layout_results
+            except Exception as e2:
+                logger.warning(f"切换备用模型并重试仍失败，将回退到默认检测: {e2}")
             return self._default_layout_detection(image_path)
     
     def _default_layout_detection(self, image_path: str) -> List[Dict]:

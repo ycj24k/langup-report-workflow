@@ -61,6 +61,7 @@ class OCREngine:
                 PaddleOCR = _PaddleOCR
             self.ocr = PaddleOCR(
                 use_gpu=self.use_gpu,
+                lang=OCR_CONFIG.get("lang", "ch"),
                 det_limit_side_len=OCR_CONFIG["det_limit_side_len"],
                 layout=OCR_CONFIG["layout"],
                 table=OCR_CONFIG["table"],
@@ -88,10 +89,16 @@ class OCREngine:
                     self.layout_model = YOLO(str(local_fallback)) if local_fallback.exists() else YOLO("yolov8n.pt")
                     logger.info(f"已回退并加载yolov8n.pt 作为布局检测模型: {local_fallback if local_fallback.exists() else 'ultralytics内置'}")
             else:
-                logger.warning("布局检测模型文件不存在，尝试从models目录加载yolov8n.pt")
-                local_fallback = Path(__file__).parent / "models" / "yolov8n.pt"
-                self.layout_model = YOLO(str(local_fallback)) if local_fallback.exists() else YOLO("yolov8n.pt")
-                logger.info(f"已回退并加载yolov8n.pt 作为布局检测模型: {local_fallback if local_fallback.exists() else 'ultralytics内置'}")
+                # 尝试加载专业备用模型
+                fb = Path(LAYOUT_CONFIG.get("fallback_model", ""))
+                if fb and fb.exists():
+                    self.layout_model = YOLO(str(fb))
+                    logger.info(f"已回退并加载备用布局模型: {fb}")
+                else:
+                    logger.warning("布局检测模型不存在，回退到yolov8n.pt")
+                    local_fallback = Path(__file__).parent / "models" / "yolov8n.pt"
+                    self.layout_model = YOLO(str(local_fallback)) if local_fallback.exists() else YOLO("yolov8n.pt")
+                    logger.info(f"已回退并加载yolov8n.pt 作为布局检测模型: {local_fallback if local_fallback.exists() else 'ultralytics内置'}")
         except Exception as e:
             logger.warning(f"布局检测模型加载失败: {e}，将回退到通用检测模型")
             try:
@@ -327,7 +334,7 @@ class OCREngine:
                     table_regions.append(region)
             
             # 如果布局检测没有找到足够的文本区域，使用直接OCR
-            if len(text_regions) < (0 if self.mode == "快速" else 1):
+            if len(text_regions) < (1 if self.mode == "快速" else 1):
                 logger.info("布局检测文本区域不足，使用直接OCR...")
                 direct_text = self.extract_text_direct(image_path)
                 if direct_text:

@@ -1,0 +1,34 @@
+# Linux服务器专用依赖
+# 注意：移除了Windows特定的依赖
+
+# Web框架
+fastapi==0.111.0
+uvicorn==0.30.0
+requests==2.31.0
+
+# OCR相关依赖
+paddlepaddle==2.6.1
+opencv-python-headless==4.10.0.84
+torch==2.4.1
+torchvision==0.19.1
+ultralytics==8.0.196
+
+# PDF处理
+PyMuPDF==1.24.10
+Pillow==10.3.0
+
+# PPT处理（Linux版本）
+python-pptx>=0.6.21
+# 注意：pywin32只在Windows上需要，Linux上不需要
+
+# LLM处理（服务器仅负责OCR，移除以避免冲突）
+
+# 工具库
+loguru==0.7.2
+numpy>=1.26.4
+scikit-image==0.23.2
+pandas>=1.5.0
+httpx>=0.24.0
+
+# 加密库（用于LLM API）
+gmssl>=3.2.1

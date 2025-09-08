@@ -28,7 +28,10 @@ except ImportError:
     logger.warning("pywin32库未安装，PPT文件处理功能将不可用")
 
 from .config import OUTPUT_DIR, PICKLES_DIR, PROMPTS
-from .llm_processor import LLMProcessor
+try:
+    from .llm_processor import LLMProcessor
+except Exception:
+    LLMProcessor = None
 
 
 class PPTProcessor:
@@ -38,7 +41,7 @@ class PPTProcessor:
         """
         初始化PPT处理器
         """
-        self.llm_processor = LLMProcessor()
+        self.llm_processor = LLMProcessor() if LLMProcessor else None
         self.supported_formats = []
         
         if PPTX_AVAILABLE:
@@ -136,8 +139,14 @@ class PPTProcessor:
                 progress = (slide_num + 1) / total_slides * 100
                 logger.info(f"处理进度: {progress:.1f}%")
             
-            # 生成摘要和关键词
-            summary_result = self._generate_summary(all_texts)
+            # 服务器端不执行LLM，返回空占位
+            summary_result = {
+                'summary': '',
+                'keywords': [],
+                'hybrid_summary': '',
+                'markdown_content': '',
+                'part_summaries': []
+            }
             
             # 保存结果
             result = {
@@ -198,8 +207,14 @@ class PPTProcessor:
                 # 关闭演示文稿
                 presentation.Close()
                 
-                # 生成摘要和关键词
-                summary_result = self._generate_summary(all_texts)
+                # 服务器端不执行LLM，返回空占位
+                summary_result = {
+                    'summary': '',
+                    'keywords': [],
+                    'hybrid_summary': '',
+                    'markdown_content': '',
+                    'part_summaries': []
+                }
                 
                 # 保存结果
                 result = {

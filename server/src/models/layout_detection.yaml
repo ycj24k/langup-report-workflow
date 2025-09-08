@@ -1,9 +1,0 @@
-tasks:
-  layout_detection:
-    model: layout_detection_yolo
-    model_config:
-      img_size: 1024
-      conf_thres: 0.25
-      iou_thres: 0.45
-      model_path: /home/spoce/rag/Langup/Server/layout_manager/models/doclayout_yolo_ft.pt
-      visualize: True

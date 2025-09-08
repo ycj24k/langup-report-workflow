@@ -31,9 +31,10 @@ OCR_CONFIG = {
     "det_db_box_thresh": 0.5      # 文本框检测阈值
 }
 
-# 布局检测配置（优先从本地 models 目录加载）
+# 布局检测配置（优先使用专业模型，提供回退）
 LAYOUT_CONFIG = {
-    "model_path": str(MODELS_DIR / "yolov8n.pt"),
+    "model_path": str(MODELS_DIR / "doclayout_yolo_ft.pt"),
+    "fallback_model": str(MODELS_DIR / "yolov10l_ft.pt"),
     "conf_threshold": 0.25,
     "iou_threshold": 0.45,
     "max_det": 50
@@ -94,7 +95,20 @@ PROMPTS = {
     "hybrid": "请分析以下文本，提供结构化的要点总结：\n{context}",
     "markdown": "请将以下文本转换为Markdown格式：\n{context}",
     "part_summary": "请对以下段落进行简洁总结：\n{context}",
-    "charts": "请判断这个图像是否包含有用的图表或数据可视化内容。如果是，请返回true；如果不是，请返回false。"
+    "charts": "请判断这个图像是否包含有用的图表或数据可视化内容。如果是，请返回true；如果不是，请返回false。",
+    "classify": (
+        "你是行业研报分类助手。请基于全文内容判断所属行业/主题分类，"
+        "从以下候选中多选返回：['宏观','消费','TMT','能源与化工','医药与医疗',"
+        "'机械制造','汽车','电子','军工','建材','地产','商贸零售','计算机/AI',"
+        "'金融','农业','海外市场','其他']。"
+        "只输出JSON，字段要求：{\"categories\":[{\"name\":str,\"description\":str}],\"confidence\":0-1的小数}。"
+        "注意：\n- description 用1-2句话概括为何归入该类，突出依据（数据/主题/结论）。\n"
+        "- 仅输出严格JSON，无解释。\n内容：\n{context}"
+    ),
+    "tags": (
+        "请为以下内容打10-20个标签，覆盖核心主题、公司、指标、结论与风险，"
+        "使用中文，按重要性降序，避免过长短语；只输出JSON：{\"tags\":[...]}。\n内容：\n{context}"
+    )
 }
 
 # 文件类型支持
@@ -112,7 +126,7 @@ LOG_CONFIG = {
 
 # 远程OCR配置
 REMOTE_OCR_CONFIG = {
-    "enabled": False,  # 是否启用远程OCR
+    "enabled": True,  # 是否启用远程OCR
     "server_url": "http://192.168.3.133:8888",  # 远程OCR服务器地址
     "timeout": 300,  # 请求超时时间（秒）
     "retry_times": 3,  # 重试次数

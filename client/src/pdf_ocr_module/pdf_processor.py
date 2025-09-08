@@ -179,6 +179,15 @@ class PDFProcessor:
                 
                 # 生成摘要和关键词
                 summary_result = self._generate_summary(all_texts)
+                # 分类与打标签
+                try:
+                    all_text = "\n".join([t['text'] for t in all_texts])
+                    categories = self.llm_processor.classify(all_text)
+                    tags = self.llm_processor.generate_tags(all_text)
+                except Exception as e:
+                    logger.warning(f"分类/打标签阶段异常: {e}")
+                    categories = {"categories": [], "confidence": 0.0}
+                    tags = []
                 
                 # 保存结果
                 result = {
@@ -192,7 +201,11 @@ class PDFProcessor:
                     'keywords': summary_result.get('keywords', []),
                     'hybrid_summary': summary_result.get('hybrid_summary', ''),
                     'markdown_content': summary_result.get('markdown_content', ''),
-                    'part_summaries': summary_result.get('part_summaries', [])
+                    'part_summaries': summary_result.get('part_summaries', []),
+                    'categories': [c.get('name') for c in categories.get('categories', [])],
+                    'category_descriptions': {c.get('name'): c.get('description') for c in categories.get('categories', []) if c.get('name')},
+                    'category_confidence': categories.get('confidence', 0.0),
+                    'tags': tags
                 }
                 
                 # 保存到pickle文件

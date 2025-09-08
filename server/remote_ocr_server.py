@@ -19,7 +19,44 @@ from loguru import logger
 # 添加src路径
 sys.path.append('src')
 
-from pdf_ocr_module import PDFProcessor, PPTProcessor, OCREngine
+from src import PDFProcessor, PPTProcessor, OCREngine
+
+# GPU 信息探测
+def _probe_gpu_info():
+    info = {
+        "torch": {"available": False, "device_count": 0, "devices": []},
+        "paddle": {"compiled_with_cuda": False, "device": "unknown"},
+        "opencv": {"cuda_device_count": 0}
+    }
+    try:
+        import torch
+        info["torch"]["available"] = bool(torch.cuda.is_available())
+        if info["torch"]["available"]:
+            count = torch.cuda.device_count()
+            info["torch"]["device_count"] = count
+            info["torch"]["devices"] = [torch.cuda.get_device_name(i) for i in range(count)]
+    except Exception as e:
+        info["torch"]["error"] = str(e)
+    try:
+        import paddle
+        info["paddle"]["compiled_with_cuda"] = bool(paddle.device.is_compiled_with_cuda())
+        try:
+            info["paddle"]["device"] = paddle.device.get_device()
+        except Exception:
+            pass
+    except Exception as e:
+        info["paddle"]["error"] = str(e)
+    try:
+        import cv2
+        cnt = 0
+        try:
+            cnt = int(cv2.cuda.getCudaEnabledDeviceCount())
+        except Exception:
+            cnt = 0
+        info["opencv"]["cuda_device_count"] = cnt
+    except Exception as e:
+        info["opencv"]["error"] = str(e)
+    return info
 
 app = FastAPI(title="远程GPU OCR服务", version="1.0.0")
 
@@ -44,6 +81,8 @@ async def startup_event():
     
     try:
         logger.info("正在初始化GPU OCR服务...")
+        gpu_info = _probe_gpu_info()
+        logger.info(f"GPU 探测: {gpu_info}")
         
         # 初始化OCR引擎（使用GPU）
         ocr_engine = OCREngine(use_gpu=True)
@@ -70,6 +109,8 @@ async def root():
         "status": "running",
         "service": "GPU OCR Service",
         "gpu_enabled": True,
+        "llm_enabled": False,
+        "gpu_info": _probe_gpu_info(),
         "components": {
             "pdf_processor": pdf_processor is not None,
             "ppt_processor": ppt_processor is not None,
@@ -214,12 +255,19 @@ async def health_check():
     return {
         "status": "healthy",
         "gpu_available": True,
+        "llm_enabled": False,
+        "gpu_info": _probe_gpu_info(),
         "components": {
             "pdf_processor": pdf_processor is not None,
             "ppt_processor": ppt_processor is not None,
             "ocr_engine": ocr_engine is not None
         }
     }
+
+@app.get("/gpu")
+async def gpu_info():
+    """返回详细GPU信息"""
+    return _probe_gpu_info()
 
 if __name__ == "__main__":
     # 配置日志

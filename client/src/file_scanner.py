@@ -37,6 +37,7 @@ class FileScanner:
         
         # 初始化PDF OCR功能
         self.enable_pdf_ocr = enable_pdf_ocr and PDF_OCR_AVAILABLE
+        self.pdf_processor = None
         if self.enable_pdf_ocr:
             try:
                 self.pdf_processor = PDFProcessor(use_gpu=use_gpu)
@@ -47,6 +48,7 @@ class FileScanner:
         
         # 初始化PPT OCR功能
         self.enable_ppt_ocr = enable_ppt_ocr and PPT_OCR_AVAILABLE
+        self.ppt_processor = None
         if self.enable_ppt_ocr:
             try:
                 self.ppt_processor = PPTProcessor()
@@ -67,6 +69,35 @@ class FileScanner:
             self.vector_store = None
 
         self.parse_mode = "快速"
+    
+    def _ensure_processors_available(self):
+        """确保处理器可用，如果未初始化则动态创建"""
+        # 确保PDF处理器可用
+        if self.enable_pdf_ocr and self.pdf_processor is None:
+            try:
+                self.pdf_processor = PDFProcessor(use_gpu=False)  # 使用默认GPU设置
+                print("动态创建PDF处理器成功")
+            except Exception as e:
+                print(f"动态创建PDF处理器失败: {e}")
+                self.enable_pdf_ocr = False
+        
+        # 确保PPT处理器可用
+        if self.enable_ppt_ocr and self.ppt_processor is None:
+            try:
+                self.ppt_processor = PPTProcessor()
+                print("动态创建PPT处理器成功")
+            except Exception as e:
+                print(f"动态创建PPT处理器失败: {e}")
+                self.enable_ppt_ocr = False
+        
+        # 确保向量存储可用
+        if (self.enable_pdf_ocr or self.enable_ppt_ocr) and self.vector_store is None:
+            try:
+                self.vector_store = VectorStore(use_milvus=False)  # 使用默认Milvus设置
+                print("动态创建向量存储成功")
+            except Exception as e:
+                print(f"动态创建向量存储失败: {e}")
+                self.vector_store = None
 
     def set_parse_mode(self, mode: str):
         if mode in ("快速", "精细"):
@@ -162,6 +193,9 @@ class FileScanner:
         """
         if not self.enable_pdf_ocr and not self.enable_ppt_ocr:
             return {'status': 'error', 'message': 'OCR模块未启用'}
+        
+        # 确保处理器可用
+        self._ensure_processors_available()
         
         results = {
             'total': len(file_indices),
@@ -289,6 +323,13 @@ class FileScanner:
             更新后的文件信息字典
         """
         try:
+            # 检查是否启用PDF OCR
+            if not self.enable_pdf_ocr:
+                print(f"PDF OCR已禁用，跳过处理: {file_info['file_name']}")
+                file_info['processing_status'] = 'skipped'
+                file_info['error_message'] = 'PDF OCR已禁用'
+                return file_info
+            
             pdf_path = file_info['file_path']
             file_name = file_info['file_name']
             
@@ -451,6 +492,13 @@ class FileScanner:
             更新后的文件信息字典
         """
         try:
+            # 检查是否启用PPT OCR
+            if not self.enable_ppt_ocr:
+                print(f"PPT OCR已禁用，跳过处理: {file_info['file_name']}")
+                file_info['processing_status'] = 'skipped'
+                file_info['error_message'] = 'PPT OCR已禁用'
+                return file_info
+            
             ppt_path = file_info['file_path']
             file_name = file_info['file_name']
             

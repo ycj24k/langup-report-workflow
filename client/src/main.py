@@ -21,8 +21,8 @@ from pathlib import Path
 
 class ResearchFileManager:
     def __init__(self):
-        # 关闭自动OCR，只在手动解析时进行
-        self.file_scanner = FileScanner(enable_pdf_ocr=True, enable_ppt_ocr=True, use_gpu=False, use_milvus=False)
+        # 初始化时禁用自动OCR，在手动解析时会动态启用
+        self.file_scanner = FileScanner(enable_pdf_ocr=False, enable_ppt_ocr=False, use_gpu=False, use_milvus=False)
         self.database_manager = DatabaseManager()
         self.gui = None
         
@@ -271,6 +271,12 @@ class ResearchFileManager:
             # 将GUI中的文件数据传递给文件扫描器
             self.file_scanner.scanned_files = self.gui.files_data.copy()
             print(f"已将 {len(self.file_scanner.scanned_files)} 个文件数据传递给文件扫描器")
+            
+            # 动态启用OCR模块进行手动解析
+            print("启用OCR模块进行手动解析...")
+            self.file_scanner.enable_pdf_ocr = True
+            self.file_scanner.enable_ppt_ocr = True
+            
             # 读取解析模式（快速/精细）并应用
             if hasattr(self.gui, 'get_parse_mode'):
                 mode = self.gui.get_parse_mode()
@@ -280,6 +286,11 @@ class ResearchFileManager:
             
             # 使用文件扫描器的解析方法
             results = self.file_scanner.parse_selected_files(file_indices)
+            
+            # 解析完成后重新禁用OCR模块（避免扫描时自动OCR）
+            print("解析完成，重新禁用OCR模块...")
+            self.file_scanner.enable_pdf_ocr = False
+            self.file_scanner.enable_ppt_ocr = False
             
             # 检查是否有错误（OCR模块未启用等）
             if results.get('status') == 'error':

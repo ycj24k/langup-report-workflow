@@ -63,9 +63,9 @@ class VectorStore:
             if OLLAMA_AVAILABLE:
                 self.embedding_model = _OllamaEmbeddings(
                     model=VECTOR_CONFIG["model_name"],
-                    num_gpu=VECTOR_CONFIG["num_gpu"]
+                    num_gpu=VECTOR_CONFIG.get("num_gpu", 1)  # 使用GPU
                 )
-                logger.info("Ollama Embeddings初始化成功")
+                logger.info(f"Ollama Embeddings初始化成功，使用GPU: {VECTOR_CONFIG.get('num_gpu', 1)}")
             else:
                 logger.warning("OllamaEmbeddings不可用，将使用备用向量化方法")
                 self.embedding_model = None
