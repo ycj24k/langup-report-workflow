@@ -127,8 +127,8 @@ class DatabaseVersionManager:
             """
             
             if self.db_manager.connection:
-                self.db_manager.connection.execute(text(create_version_table))
-                self.db_manager.connection.commit()
+                with self.db_manager.connection.begin():
+                    self.db_manager.connection.execute(text(create_version_table))
                 print("版本控制表创建成功")
         except Exception as e:
             print(f"创建版本控制表失败: {e}")
@@ -177,7 +177,8 @@ class DatabaseVersionManager:
                 'modification_date': mod_date,
                 'status': status
             })
-            self.db_manager.connection.commit()
+            with self.db_manager.connection.begin():
+                pass  # 事务会自动提交
             return True
         except Exception as e:
             print(f"更新文件版本失败: {e}")
@@ -205,13 +206,29 @@ class DatabaseVersionManager:
                 return
             
             placeholders = ','.join([':path' + str(i) for i in range(len(file_paths))])
+            sql = f"UPDATE {self.version_table_name} SET status = 'processed' WHERE file_path IN ({placeholders})"
+            
+            params = {f'path{i}': path for i, path in enumerate(file_paths)}
+            with self.db_manager.connection.begin():
+                self.db_manager.connection.execute(text(sql), params)
+        except Exception as e:
+            print(f"标记文件已处理失败: {e}")
+    
+    def mark_files_unchanged(self, file_paths: List[str]):
+        """标记文件为未变化（仅在扫描时使用）"""
+        try:
+            from sqlalchemy import text
+            if not self.db_manager.connection or not file_paths:
+                return
+            
+            placeholders = ','.join([':path' + str(i) for i in range(len(file_paths))])
             sql = f"UPDATE {self.version_table_name} SET status = 'unchanged' WHERE file_path IN ({placeholders})"
             
             params = {f'path{i}': path for i, path in enumerate(file_paths)}
-            self.db_manager.connection.execute(text(sql), params)
-            self.db_manager.connection.commit()
+            with self.db_manager.connection.begin():
+                self.db_manager.connection.execute(text(sql), params)
         except Exception as e:
-            print(f"标记文件已处理失败: {e}")
+            print(f"标记文件未变化失败: {e}")
 
 
 class IncrementalScanner:
@@ -265,6 +282,11 @@ class IncrementalScanner:
         
         # 更新数据库版本信息
         self._update_database_versions(new_files, updated_files)
+        
+        # 标记未变化的文件为unchanged（仅在扫描时）
+        if unchanged_files:
+            unchanged_paths = [f['file_path'] for f in unchanged_files]
+            self.version_manager.mark_files_unchanged(unchanged_paths)
         
         # 保存缓存
         self.cache_manager.save_cache()

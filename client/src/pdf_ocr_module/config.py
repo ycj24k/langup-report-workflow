@@ -50,16 +50,7 @@ IMAGE_CONFIG = {
     "overlap_threshold": 0.3        # 重叠区域阈值
 }
 
-# 向量化配置
-VECTOR_CONFIG = {
-    "model_name": "quentinz/bge-large-zh-v1.5",
-    "num_gpu": 1,  # 使用GPU
-    "batch_size": 32,
-    "embedding_type": "ollama",  # 可选: "ollama", "openai"
-    "max_chunks": 1200,           # 生成向量的最大文本块数量上限（防止过慢）
-    "use_gpu": True,              # 优先使用GPU
-    "device": "cuda"              # 指定GPU设备
-}
+# 向量化配置已禁用
 
 # LLM配置（使用 LangUp API）
 LLM_CONFIG = {
@@ -80,12 +71,7 @@ LLM_CONFIG = {
     "timeout": 60
 }
 
-# Milvus配置
-MILVUS_CONFIG = {
-    "host": "localhost",
-    "port": "19530",
-    "collection_prefix": "pdf_docs_"
-}
+# Milvus配置已禁用
 
 # 服务器配置
 SERVER_CONFIG = {
@@ -126,7 +112,7 @@ PROMPTS = {
 }
 
 # 文件类型支持
-SUPPORTED_FORMATS = ['.pdf']
+SUPPORTED_FORMATS = ['.pdf', '.docx', '.doc', '.xlsx', '.xls']
 
 # 日志配置
 LOG_CONFIG = {

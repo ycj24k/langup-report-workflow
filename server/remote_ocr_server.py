@@ -19,7 +19,7 @@ from loguru import logger
 # 添加src路径
 sys.path.append('src')
 
-from src import PDFProcessor, PPTProcessor, OCREngine
+from src import PDFProcessor, PPTProcessor, OfficeProcessor, OCREngine
 
 # GPU 信息探测
 def _probe_gpu_info():
@@ -69,22 +69,49 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 全局变量
+# 全局变量（仅在启动时初始化，一直常驻内存）
 pdf_processor = None
 ppt_processor = None
 ocr_engine = None
+office_processor = None
+
+_warmed_up = False
+
+def _warmup_once():
+    global _warmed_up, ocr_engine
+    if _warmed_up or ocr_engine is None:
+        return
+    try:
+        # 进行一次轻量推理以触发 CUDA/Paddle/Torch 的内核与显存缓存
+        # 这里使用一个极小的空白图片进行直扫，避免真实 I/O
+        import numpy as np
+        import cv2
+        tmp = np.full((32, 32, 3), 255, dtype=np.uint8)
+        tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg').name
+        cv2.imwrite(tmp_path, tmp)
+        try:
+            _ = ocr_engine.extract_text_direct(tmp_path)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+        _warmed_up = True
+        logger.info("OCR 引擎 warmup 完成")
+    except Exception as e:
+        logger.warning(f"warmup 失败（不影响服务可用）: {e}")
 
 @app.on_event("startup")
 async def startup_event():
-    """启动时初始化OCR组件"""
-    global pdf_processor, ppt_processor, ocr_engine
+    """启动时初始化OCR组件（只执行一次）"""
+    global pdf_processor, ppt_processor, ocr_engine, office_processor
     
     try:
         logger.info("正在初始化GPU OCR服务...")
         gpu_info = _probe_gpu_info()
         logger.info(f"GPU 探测: {gpu_info}")
         
-        # 初始化OCR引擎（使用GPU）
+        # 初始化OCR引擎（使用GPU加速）
         ocr_engine = OCREngine(use_gpu=True)
         logger.info("OCR引擎初始化成功")
         
@@ -92,10 +119,17 @@ async def startup_event():
         pdf_processor = PDFProcessor(ocr_engine=ocr_engine)
         logger.info("PDF处理器初始化成功")
         
-        # 初始化PPT处理器
-        ppt_processor = PPTProcessor()
+        # 初始化PPT处理器（传入已初始化的OCR引擎以便图片直扫补救）
+        ppt_processor = PPTProcessor(ocr_engine=ocr_engine)
         logger.info("PPT处理器初始化成功")
         
+        # 初始化Office处理器（只做文本解析，无需 OCR 引擎）
+        office_processor = OfficeProcessor(use_gpu=False)
+        logger.info("Office处理器初始化成功")
+        
+        # 预热，减少首个请求的冷启动延迟
+        _warmup_once()
+
         logger.info("🚀 GPU OCR服务启动成功！")
         
     except Exception as e:
@@ -209,6 +243,47 @@ async def process_ppt(file: UploadFile = File(...)):
             
     except Exception as e:
         logger.error(f"PPT处理异常: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/ocr/office")
+async def process_office(file: UploadFile = File(...)):
+    """处理Office文档（Word/Excel）"""
+    try:
+        logger.info(f"开始处理Office文档: {file.filename}")
+        
+        # 检查文件类型
+        file_ext = Path(file.filename).suffix.lower()
+        if file_ext not in ['.docx', '.doc', '.xlsx', '.xls']:
+            raise HTTPException(status_code=400, detail=f"不支持的文件类型: {file_ext}")
+        
+        # 保存上传的文件到临时目录
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+            content = await file.read()
+            tmp_file.write(content)
+            tmp_file_path = tmp_file.name
+        
+        try:
+            # 使用Office处理器处理文档
+            result = office_processor.process_office_document(tmp_file_path, file.filename)
+            
+            if result.get('status') == 'success':
+                logger.info(f"Office文档处理成功: {file.filename}")
+                return result
+            else:
+                logger.error(f"Office文档处理失败: {result.get('message', '未知错误')}")
+                raise HTTPException(status_code=500, detail=result.get('message', '处理失败'))
+                
+        finally:
+            # 清理临时文件
+            try:
+                os.unlink(tmp_file_path)
+            except Exception:
+                pass
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Office文档处理异常: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ocr/image")

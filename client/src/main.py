@@ -22,7 +22,7 @@ from pathlib import Path
 class ResearchFileManager:
     def __init__(self):
         # 初始化时禁用自动OCR，在手动解析时会动态启用
-        self.file_scanner = FileScanner(enable_pdf_ocr=False, enable_ppt_ocr=False, use_gpu=False, use_milvus=False)
+        self.file_scanner = FileScanner(enable_pdf_ocr=False, enable_ppt_ocr=False, enable_office_ocr=False, use_gpu=False)
         self.database_manager = DatabaseManager()
         self.gui = None
         
@@ -276,6 +276,7 @@ class ResearchFileManager:
             print("启用OCR模块进行手动解析...")
             self.file_scanner.enable_pdf_ocr = True
             self.file_scanner.enable_ppt_ocr = True
+            self.file_scanner.enable_office_ocr = True
             
             # 读取解析模式（快速/精细）并应用
             if hasattr(self.gui, 'get_parse_mode'):
@@ -291,6 +292,7 @@ class ResearchFileManager:
             print("解析完成，重新禁用OCR模块...")
             self.file_scanner.enable_pdf_ocr = False
             self.file_scanner.enable_ppt_ocr = False
+            self.file_scanner.enable_office_ocr = False
             
             # 检查是否有错误（OCR模块未启用等）
             if results.get('status') == 'error':
@@ -517,7 +519,8 @@ def show_startup_info():
     print("6. 支持Excel导入/导出功能")
     print("=" * 60)
     print("配置信息:")
-    print(f"网络盘路径: {os.path.join('\\\\', 'NAS', 'study', 'study')}")
+    network_path = os.path.join('\\\\', 'NAS', 'study', 'study')
+    print(f"网络盘路径: {network_path}")
     print(f"数据库地址: {DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}")
     print(f"数据库名称: {DATABASE_CONFIG['database']}")
     print("=" * 60)

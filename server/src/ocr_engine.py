@@ -81,8 +81,14 @@ class OCREngine:
             # 优先加载已训练的.pt 权重，其次避免直接加载yaml导致的backbone错误
             if model_path.exists():
                 if model_path.suffix.lower() == ".pt":
-                    self.layout_model = YOLO(str(model_path))
-                    logger.info(f"布局检测模型(.pt)加载成功: {model_path}")
+                    try:
+                        self.layout_model = YOLO(str(model_path))
+                        # 测试模型是否能正常工作
+                        test_result = self.layout_model.predict("https://ultralytics.com/images/bus.jpg", verbose=False)
+                        logger.info(f"布局检测模型(.pt)加载成功: {model_path}")
+                    except Exception as model_error:
+                        logger.warning(f"主模型加载失败: {model_error}，尝试备用模型")
+                        self._load_fallback_model()
                 elif model_path.suffix.lower() in {".yaml", ".yml"}:
                     logger.warning("检测到的是模型配置(yaml)，非已训练权重，将回退到通用检测权重models/yolov8n.pt")
                     local_fallback = Path(__file__).parent / "models" / "yolov8n.pt"
@@ -107,6 +113,41 @@ class OCREngine:
             except Exception as _:
                 logger.warning("通用检测模型加载失败，将使用默认规则检测")
                 self.layout_model = None
+    
+    def _load_fallback_model(self):
+        """加载备用模型"""
+        try:
+            # 尝试加载专业备用模型
+            fb = Path(LAYOUT_CONFIG.get("fallback_model", ""))
+            if fb and fb.exists():
+                try:
+                    self.layout_model = YOLO(str(fb))
+                    # 测试模型是否能正常工作
+                    test_result = self.layout_model.predict("https://ultralytics.com/images/bus.jpg", verbose=False)
+                    logger.info(f"已回退并加载备用布局模型: {fb}")
+                    return
+                except Exception as fb_error:
+                    logger.warning(f"备用模型加载失败: {fb_error}")
+            
+            # 尝试本地yolov8n.pt
+            local_fallback = Path(__file__).parent / "models" / "yolov8n.pt"
+            if local_fallback.exists():
+                try:
+                    self.layout_model = YOLO(str(local_fallback))
+                    test_result = self.layout_model.predict("https://ultralytics.com/images/bus.jpg", verbose=False)
+                    logger.info(f"已回退并加载本地yolov8n.pt: {local_fallback}")
+                    return
+                except Exception as local_error:
+                    logger.warning(f"本地模型加载失败: {local_error}")
+            
+            # 最后的回退方案：使用内置模型
+            self.layout_model = YOLO("yolov8n.pt")
+            test_result = self.layout_model.predict("https://ultralytics.com/images/bus.jpg", verbose=False)
+            logger.warning("使用内置yolov8n.pt作为布局检测模型")
+            
+        except Exception as e2:
+            logger.error(f"所有模型都无法加载: {e2}")
+            self.layout_model = None
     
     def detect_layout(self, image_path: str) -> List[Dict]:
         """
@@ -152,6 +193,10 @@ class OCREngine:
             
         except Exception as e:
             logger.error(f"布局检测失败: {e}")
+            # 如果模型出错，设置为None以避免后续错误
+            if "bn" in str(e) or "Conv" in str(e):
+                logger.warning("检测到模型兼容性问题，禁用布局检测模型")
+                self.layout_model = None
             return self._default_layout_detection(image_path)
     
     def _default_layout_detection(self, image_path: str) -> List[Dict]:

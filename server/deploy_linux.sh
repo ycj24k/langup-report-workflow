@@ -94,6 +94,10 @@ pip install -r "$REQ_FILE"
 # 注：2.7.0.3 与 Paddle 2.6.1 兼容；--no-deps 以我们的版本为准
 pip install --no-deps paddleocr==2.7.0.3
 
+# 显式安装 doclayout-yolo 与 huggingface_hub，避免Ultralytics运行时自动安装
+pip install --no-cache-dir doclayout-yolo || pip install --no-cache-dir doclayout_yolo || true
+pip install --no-cache-dir "huggingface_hub>=0.20.0" || true
+
 # 创建必要的目录
 echo "创建必要目录..."
 mkdir -p logs
@@ -126,6 +130,7 @@ Type=simple
 User=spoce
 WorkingDirectory=$PROJECT_DIR
 Environment=PATH=$PROJECT_DIR/venv/bin
+Environment=ULTRALYTICS_AUTO_INSTALL=0
 ExecStart=$PROJECT_DIR/venv/bin/python remote_ocr_server.py
 Restart=always
 RestartSec=10

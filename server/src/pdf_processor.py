@@ -161,17 +161,21 @@ class PDFProcessor:
                             standard_image_path = self._generate_page_image(
                                 page, page_num, output_path, IMAGE_CONFIG["target_resolution"]
                             )
-                            # 直接OCR整个页面
-                            direct_text = self.ocr_engine.extract_text_direct(standard_image_path)
-                            if direct_text.strip():
-                                all_texts.append({
-                                    'page': page_num + 1,
-                                    'text': direct_text,
-                                    'bbox': None,
-                                    'category': 'text',
-                                    'confidence': 0.6
-                                })
-                                logger.info(f"第{page_num + 1}页强制提取到{len(direct_text)}字符文本")
+                            # 直接OCR整个页面（返回为列表[{text, bbox, ...}]）
+                            direct_texts = self.ocr_engine.extract_text_direct(standard_image_path)
+                            if direct_texts:
+                                merged_text = "\n".join([t.get('text', '') for t in direct_texts if t.get('text')])
+                                if merged_text.strip():
+                                    all_texts.append({
+                                        'page': page_num + 1,
+                                        'text': merged_text,
+                                        'bbox': None,
+                                        'category': 'text',
+                                        'confidence': 0.6
+                                    })
+                                    logger.info(f"第{page_num + 1}页强制提取到{len(merged_text)}字符文本")
+                                else:
+                                    logger.warning(f"第{page_num + 1}页强制提取失败，无文本内容")
                             else:
                                 logger.warning(f"第{page_num + 1}页强制提取失败，无文本内容")
                         except Exception as e:
@@ -293,6 +297,25 @@ class PDFProcessor:
                         'category': 'table'
                     })
             
+            # 若未识别到文本，进行一次直扫补救（标准或高分辨率）
+            if not texts:
+                try:
+                    fallback_image = high_image_path or standard_image_path
+                    direct_texts = self.ocr_engine.extract_text_direct(fallback_image)
+                    if direct_texts:
+                        merged = "\n".join([t.get('text', '') for t in direct_texts if t.get('text')])
+                        if merged.strip():
+                            texts.append({
+                                'page': page_num + 1,
+                                'text': merged,
+                                'bbox': None,
+                                'category': 'text',
+                                'confidence': 0.7
+                            })
+                            logger.info(f"单页直扫补救提取到文本: 第{page_num + 1}页")
+                except Exception as _e:
+                    logger.warning(f"单页直扫补救失败: 第{page_num + 1}页: {_e}")
+
             return {
                 'status': 'success',
                 'texts': texts,

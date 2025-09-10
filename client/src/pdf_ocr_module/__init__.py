@@ -5,7 +5,8 @@ PDF OCR模块 - 集成PDF和PPT文档处理功能
 
 from .pdf_processor import PDFProcessor
 from .ppt_processor import PPTProcessor
-from .vector_store import VectorStore
+from .office_processor import OfficeProcessor
+# 关闭向量功能，不导出 VectorStore
 from .llm_processor import LLMProcessor
 
-__all__ = ['PDFProcessor', 'PPTProcessor', 'VectorStore', 'LLMProcessor']
+__all__ = ['PDFProcessor', 'PPTProcessor', 'OfficeProcessor', 'LLMProcessor']

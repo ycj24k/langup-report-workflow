@@ -302,76 +302,13 @@ class LLMProcessor:
             return text
     
     def classify(self, text: str) -> Dict:
-        """基于LLM的多标签分类，返回 { categories: [{name, description}], confidence }"""
-        try:
-            if not self.llm:
-                return {"categories": [], "confidence": 0.0}
-            
-            prompt = PromptTemplate(template=PROMPTS["classify"], input_variables=["context"])
-            chain = prompt | self.llm | StrOutputParser()
-            raw = chain.invoke({"context": text})
-            
-            try:
-                data = json.loads(raw) if isinstance(raw, str) else raw
-            except Exception:
-                data = {"categories": [], "confidence": 0.0, "raw": raw}
-            
-            # 规整化：支持对象数组 {name, description}，并兼容字符串/列表
-            cats_raw = data.get("categories") or []
-            cats: List[Dict[str, str]] = []
-            if isinstance(cats_raw, list):
-                for item in cats_raw:
-                    if isinstance(item, dict):
-                        name = str(item.get("name", "")).strip()
-                        desc = str(item.get("description", "")).strip()
-                        if name:
-                            cats.append({"name": name, "description": desc})
-                    elif isinstance(item, str):
-                        name = item.strip()
-                        if name:
-                            cats.append({"name": name, "description": ""})
-            elif isinstance(cats_raw, str):
-                for name in [c.strip() for c in cats_raw.replace('，', ',').split(',') if c.strip()]:
-                    cats.append({"name": name, "description": ""})
-            
-            conf = data.get("confidence")
-            try:
-                conf = float(conf)
-            except Exception:
-                conf = 0.0
-            
-            result = {"categories": cats[:6], "confidence": max(0.0, min(1.0, conf))}
-            logger.info("分类完成")
-            return result
-        except Exception as e:
-            logger.error(f"分类失败: {e}")
-            return {"categories": [], "confidence": 0.0}
+        """基于LLM的多标签分类，返回 { categories: [{name, description}], confidence }（服务端禁用）"""
+        # 服务端不执行LLM分类，返回空结果
+        logger.info("服务端不执行LLM分类，返回空结果")
+        return {"categories": [], "confidence": 0.0}
 
     def generate_tags(self, text: str) -> List[str]:
-        """基于LLM打标签，返回有序标签列表"""
-        try:
-            if not self.llm:
-                return []
-            
-            prompt = PromptTemplate(template=PROMPTS["tags"], input_variables=["context"])
-            chain = prompt | self.llm | StrOutputParser()
-            raw = chain.invoke({"context": text})
-            
-            try:
-                data = json.loads(raw) if isinstance(raw, str) else raw
-                tags = data.get("tags") or []
-                if isinstance(tags, str):
-                    tags = [t.strip() for t in tags.replace('，', ',').split(',') if t.strip()]
-                if not isinstance(tags, list):
-                    tags = []
-            except Exception:
-                # 回退解析：按分隔符切分
-                s = str(raw)
-                tags = [t.strip() for t in s.replace('，', ',').split(',') if t.strip()]
-            
-            tags = [t for t in tags if 1 < len(t) <= 24][:20]
-            logger.info("打标签完成")
-            return tags
-        except Exception as e:
-            logger.error(f"打标签失败: {e}")
-            return []
+        """基于LLM打标签，返回有序标签列表（服务端禁用）"""
+        # 服务端不执行LLM打标签，返回空结果
+        logger.info("服务端不执行LLM打标签，返回空结果")
+        return []

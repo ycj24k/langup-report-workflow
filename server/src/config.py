@@ -18,7 +18,7 @@ MODELS_DIR.mkdir(exist_ok=True)
 
 # OCR配置
 OCR_CONFIG = {
-    "use_gpu": True,
+    "use_gpu": True,  # 使用GPU加速
     "det_limit_side_len": 2048,  # 增加分辨率限制，提高识别精度
     "layout": True,               # 启用内置布局检测
     "table": True,                # 启用表格检测
@@ -31,13 +31,15 @@ OCR_CONFIG = {
     "det_db_box_thresh": 0.5      # 文本框检测阈值
 }
 
-# 布局检测配置（优先使用专业模型，提供回退）
+# 布局检测配置（优先使用更兼容的 yolov10 模型，提供回退）
 LAYOUT_CONFIG = {
-    "model_path": str(MODELS_DIR / "doclayout_yolo_ft.pt"),
-    "fallback_model": str(MODELS_DIR / "yolov10l_ft.pt"),
+    "model_path": str(MODELS_DIR / "yolov10l_ft.pt"),
+    "fallback_model": str(MODELS_DIR / "yolov8n.pt"),
     "conf_threshold": 0.25,
     "iou_threshold": 0.45,
-    "max_det": 50
+    "max_det": 50,
+    "use_gpu": True,  # 使用GPU加速
+    "device": "cuda"  # 指定GPU设备
 }
 
 # 图像处理配置
@@ -66,12 +68,7 @@ LLM_CONFIG = {
     "temperature": 0.1
 }
 
-# Milvus配置
-MILVUS_CONFIG = {
-    "host": "localhost",
-    "port": "19530",
-    "collection_prefix": "pdf_docs_"
-}
+# Milvus配置已禁用
 
 # 服务器配置
 SERVER_CONFIG = {
@@ -126,9 +123,9 @@ LOG_CONFIG = {
 
 # 远程OCR配置
 REMOTE_OCR_CONFIG = {
-    "enabled": True,  # 是否启用远程OCR
-    "server_url": "http://192.168.3.133:8888",  # 远程OCR服务器地址
-    "timeout": 300,  # 请求超时时间（秒）
-    "retry_times": 3,  # 重试次数
-    "fallback_to_local": True  # 远程失败时是否回退到本地
+    "enabled": False,  # 服务端自身提供OCR，关闭作为“远程客户端”的能力
+    "server_url": "http://192.168.3.133:8888",
+    "timeout": 300,
+    "retry_times": 3,
+    "fallback_to_local": True
 }

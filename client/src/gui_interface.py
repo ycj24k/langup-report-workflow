@@ -13,9 +13,10 @@ from datetime import datetime
 import json
 import threading
 import os
-from config import FILE_CATEGORIES, IMPORTANCE_LEVELS, PRESET_TAGS, COMPLIANCE_STATUS, PARSING_STATUS
+from config import FILE_CATEGORIES, FILE_CATEGORIES_SIMPLE, IMPORTANCE_LEVELS, PRESET_TAGS, COMPLIANCE_STATUS, PARSING_STATUS
 import requests
 from pdf_ocr_module.config import REMOTE_OCR_CONFIG
+from ocr_task_manager import OCRTask, TaskStatus
 
 
 class ResearchFileGUI:
@@ -134,6 +135,25 @@ class ResearchFileGUI:
             font=('微软雅黑', 9)
         )
         self.parse_hint_label.pack(side=LEFT, padx=(10, 0))
+        
+        # OCR进度显示
+        self.ocr_progress_frame = ttk_bs.Frame(self.toolbar_frame)
+        self.ocr_progress_frame.pack(side=RIGHT, padx=(10, 0))
+        
+        self.ocr_progress_label = ttk_bs.Label(
+            self.ocr_progress_frame,
+            text="OCR: 0/0",
+            bootstyle="secondary"
+        )
+        self.ocr_progress_label.pack(side=LEFT, padx=(0, 5))
+        
+        self.ocr_progress_bar = ttk_bs.Progressbar(
+            self.ocr_progress_frame,
+            mode='determinate',
+            length=100,
+            bootstyle="info"
+        )
+        self.ocr_progress_bar.pack(side=LEFT, padx=(0, 8))
         
         # 服务端状态显示与检测按钮（工具栏右侧）
         right_tools = ttk_bs.Frame(self.toolbar_frame)
@@ -486,7 +506,7 @@ class ResearchFileGUI:
         self.category_combo = ttk_bs.Combobox(
             category_frame,
             textvariable=self.category_var,
-            values=FILE_CATEGORIES,
+            values=FILE_CATEGORIES_SIMPLE,
             state="normal",  # 改为normal以支持手动输入
             width=18
         )
@@ -819,6 +839,43 @@ class ResearchFileGUI:
         finally:
             # 30秒后再次检测
             self.root.after(30000, self._schedule_server_check)
+        
+        # 启动OCR进度更新
+        self._schedule_ocr_progress_update()
+    
+    def _schedule_ocr_progress_update(self):
+        """定期更新OCR进度"""
+        try:
+            self.update_ocr_progress()
+        finally:
+            # 1秒后再次更新
+            self.root.after(1000, self._schedule_ocr_progress_update)
+    
+    def update_ocr_progress(self):
+        """更新OCR进度显示"""
+        try:
+            if hasattr(self, 'file_scanner') and self.file_scanner:
+                stats = self.file_scanner.get_ocr_progress()
+                running_tasks = self.file_scanner.get_running_tasks()
+                
+                total_tasks = stats['total_tasks']
+                running_count = stats['running']
+                completed_count = stats['completed']
+                
+                if total_tasks > 0:
+                    progress = (completed_count / total_tasks) * 100
+                    self.ocr_progress_bar['value'] = progress
+                    self.ocr_progress_label.config(text=f"OCR: {completed_count}/{total_tasks}")
+                    
+                    # 显示正在运行的任务
+                    if running_tasks:
+                        running_files = [os.path.basename(task.file_path) for task in running_tasks]
+                        self.ocr_progress_label.config(text=f"OCR: {completed_count}/{total_tasks} (处理中: {', '.join(running_files[:2])}{'...' if len(running_files) > 2 else ''})")
+                else:
+                    self.ocr_progress_bar['value'] = 0
+                    self.ocr_progress_label.config(text="OCR: 0/0")
+        except Exception as e:
+            print(f"更新OCR进度失败: {e}")
 
     def check_server_health(self):
         """检测远程OCR服务健康状态并在GUI显示"""
@@ -1005,17 +1062,25 @@ class ResearchFileGUI:
             messagebox.showwarning("警告", "未找到可解析的文件")
             return
         
-        # 过滤出支持的文件类型（PDF、PPT、PPTX）
+        # 过滤出支持的文件类型（PDF、PPT、PPTX、Word、Excel）
         supported_files = [f for f in selected_records 
-                          if f.get('extension', '').lower() in ['.pdf', '.ppt', '.pptx']]
+                          if f.get('extension', '').lower() in ['.pdf', '.ppt', '.pptx', '.docx', '.doc', '.xlsx', '.xls']]
         if not supported_files:
-            messagebox.showwarning("警告", "所选文件中没有支持解析的文件类型（PDF、PPT、PPTX）")
+            messagebox.showwarning("警告", "所选文件中没有支持解析的文件类型（PDF、PPT、PPTX、Word、Excel）")
             return
         
-        # 检查文件状态
+        # 检查文件状态和锁定状态
         valid_files = []
         invalid_files = []
+        locked_files = []
         for f in supported_files:
+            file_path = f.get('file_path')
+            
+            # 检查文件是否正在处理
+            if hasattr(self, 'file_scanner') and self.file_scanner and self.file_scanner.is_file_processing(file_path):
+                locked_files.append(f)
+                continue
+            
             if f.get('compliance_status') == '符合':
                 valid_files.append(f)
             else:
@@ -1028,6 +1093,10 @@ class ResearchFileGUI:
         if invalid_files:
             invalid_names = [f.get('file_name') for f in invalid_files]
             messagebox.showwarning("警告", f"以下文件状态不是'符合'，将被跳过：\n{', '.join(invalid_names)}")
+        
+        if locked_files:
+            locked_names = [f.get('file_name') for f in locked_files]
+            messagebox.showwarning("警告", f"以下文件正在处理中，将被跳过：\n{', '.join(locked_names)}")
         
         if self.on_parse_files:
             # 获取有效文件在files_data中的索引
@@ -1043,25 +1112,43 @@ class ResearchFileGUI:
                 messagebox.showwarning("警告", "无法确定文件索引，解析失败")
                 return
             
-            confirm_msg = f"确定要解析所选的 {len(valid_files)} 个文件吗？\n这将进行OCR识别和向量化处理。"
+            confirm_msg = f"确定要解析所选的 {len(valid_files)} 个文件吗？\n这将进行多进程OCR识别和向量化处理。"
             
             result = messagebox.askyesno("确认", confirm_msg)
             if not result:
                 return
             
-            self.progress.start()
-            self.status_label.config(text="正在解析文件...")
-            
-            def parse_thread():
-                try:
-                    success = self.on_parse_files(file_indices)
-                    self.root.after(0, self.on_parse_complete, success)
-                except Exception as e:
-                    self.root.after(0, self.on_parse_error, str(e))
-            
-            threading.Thread(target=parse_thread, daemon=True).start()
+            # 使用新的多进程OCR系统
+            self._submit_ocr_tasks(valid_files)
         else:
             messagebox.showwarning("警告", "解析功能未启用")
+    
+    def _submit_ocr_tasks(self, valid_files):
+        """提交OCR任务到多进程管理器"""
+        try:
+            if not hasattr(self, 'file_scanner') or not self.file_scanner:
+                messagebox.showerror("错误", "文件扫描器未初始化")
+                return
+            
+            # 获取文件路径
+            file_paths = [f.get('file_path') for f in valid_files]
+            
+            # 提交OCR任务
+            task_ids = self.file_scanner.submit_ocr_tasks(file_paths, self._on_ocr_progress)
+            
+            if task_ids:
+                self.status_label.config(text=f"已提交 {len(task_ids)} 个OCR任务，正在处理...")
+                messagebox.showinfo("成功", f"已提交 {len(task_ids)} 个OCR任务到后台处理\n可以在进度条中查看处理状态")
+            else:
+                messagebox.showwarning("警告", "没有成功提交任何OCR任务")
+                
+        except Exception as e:
+            messagebox.showerror("错误", f"提交OCR任务失败: {str(e)}")
+    
+    def _on_ocr_progress(self, task_id):
+        """OCR任务进度回调"""
+        # 这个方法会被任务管理器调用
+        pass
     
     def on_parse_complete(self, success):
         """
@@ -1576,11 +1663,11 @@ class ResearchFileGUI:
         添加新分类
         """
         new_category = self.category_var.get().strip()
-        if new_category and new_category not in FILE_CATEGORIES:
+        if new_category and new_category not in FILE_CATEGORIES_SIMPLE:
             # 添加到全局分类列表
-            FILE_CATEGORIES.append(new_category)
+            FILE_CATEGORIES.append({'name': new_category, 'description': f'{new_category}相关文档'})
             # 更新下拉框选项
-            self.category_combo['values'] = FILE_CATEGORIES
+            self.category_combo['values'] = FILE_CATEGORIES_SIMPLE
             messagebox.showinfo("成功", f"已添加新分类: {new_category}")
     
     def add_tag(self):

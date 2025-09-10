@@ -28,6 +28,7 @@ except ImportError:
     logger.warning("pywin32库未安装，PPT文件处理功能将不可用")
 
 from .config import OUTPUT_DIR, PICKLES_DIR, PROMPTS
+from .ocr_engine import OCREngine
 try:
     from .llm_processor import LLMProcessor
 except Exception:
@@ -37,11 +38,12 @@ except Exception:
 class PPTProcessor:
     """PPT处理器，负责PPT/PPTX解析和内容提取"""
     
-    def __init__(self):
+    def __init__(self, ocr_engine: Optional[OCREngine] = None):
         """
         初始化PPT处理器
         """
         self.llm_processor = LLMProcessor() if LLMProcessor else None
+        self.ocr_engine = ocr_engine
         self.supported_formats = []
         
         if PPTX_AVAILABLE:
@@ -134,6 +136,13 @@ class PPTProcessor:
                 slide_text = self._extract_slide_text(slide, slide_num)
                 slide_texts.append(slide_text)
                 all_texts.extend(slide_text)
+
+                # 若该页文本过少，尝试对图片进行OCR补充
+                if self.ocr_engine and len(''.join(slide_text).strip()) < 10:
+                    ocr_extra = self._ocr_pptx_slide_images(slide, output_path, slide_num)
+                    if ocr_extra:
+                        slide_texts[-1].extend(ocr_extra)
+                        all_texts.extend(ocr_extra)
                 
                 # 进度更新
                 progress = (slide_num + 1) / total_slides * 100
@@ -282,6 +291,36 @@ class PPTProcessor:
             
         except Exception as e:
             logger.error(f"提取幻灯片{slide_num + 1}文本失败: {e}")
+            return []
+
+    def _ocr_pptx_slide_images(self, slide, output_path: Path, slide_num: int) -> List[str]:
+        """对幻灯片中的图片形状进行OCR，返回补充文本"""
+        texts: List[str] = []
+        try:
+            from pptx.enum.shapes import MSO_SHAPE_TYPE
+            for shape in getattr(slide, 'shapes', []):
+                try:
+                    if getattr(shape, 'shape_type', None) == MSO_SHAPE_TYPE.PICTURE and hasattr(shape, 'image'):
+                        image_blob = shape.image.blob
+                        if not image_blob:
+                            continue
+                        img_name = f"slide_{slide_num + 1}_img_{shape.shape_id}.png"
+                        img_path = output_path / img_name
+                        with open(img_path, 'wb') as f:
+                            f.write(image_blob)
+                        if self.ocr_engine:
+                            ocr_items = self.ocr_engine.extract_text_direct(str(img_path))
+                            if ocr_items:
+                                merged = "\n".join([t.get('text', '') for t in ocr_items if t.get('text')])
+                                if merged.strip():
+                                    texts.append(merged)
+                except Exception as _e:
+                    logger.debug(f"OCR图片失败(第{slide_num + 1}页某图): {_e}")
+            if texts:
+                logger.info(f"幻灯片{slide_num + 1}通过图片OCR补充到{len(texts)}段文本")
+            return texts
+        except Exception as e:
+            logger.warning(f"OCR图片补充失败(第{slide_num + 1}页): {e}")
             return []
     
     def _extract_ppt_slide_text(self, slide, slide_num: int) -> List[str]:

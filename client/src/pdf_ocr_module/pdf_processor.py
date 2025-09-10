@@ -208,7 +208,7 @@ class PDFProcessor:
                     'tags': tags
                 }
                 
-                # 保存到pickle文件
+                # 保存到pickle文件（去除向量内容，仅保存必要字段）
                 self._save_to_pickle(result, output_name)
                 
                 return result

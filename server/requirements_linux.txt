@@ -12,6 +12,8 @@ opencv-python-headless==4.10.0.84
 torch==2.4.1
 torchvision==0.19.1
 ultralytics==8.0.196
+doclayout-yolo>=0.0.3
+huggingface_hub>=0.20.0
 
 # PDF处理
 PyMuPDF==1.24.10
@@ -20,6 +22,12 @@ Pillow==10.3.0
 # PPT处理（Linux版本）
 python-pptx>=0.6.21
 # 注意：pywin32只在Windows上需要，Linux上不需要
+
+# Office文档处理
+python-docx>=0.8.11
+openpyxl>=3.1.0
+xlrd>=2.0.1
+docx2txt>=0.8
 
 # LLM处理（服务器仅负责OCR，移除以避免冲突）
 

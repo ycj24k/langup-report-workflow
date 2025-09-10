@@ -36,8 +36,8 @@ class DatabaseManager:
             
             # 创建数据库（如果不存在）
             with temp_engine.connect() as conn:
-                conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {self.database_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"))
-                conn.commit()
+                with conn.begin():
+                    conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {self.database_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"))
             
             # 连接到指定数据库
             connection_string_with_db = (
@@ -116,11 +116,37 @@ class DatabaseManager:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文件分类表'
             """
             
+            # OCR分析结果表
+            create_ocr_analysis_table = """
+            CREATE TABLE IF NOT EXISTS ocr_analysis_results (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                file_id INT NOT NULL COMMENT '关联文件ID',
+                file_path TEXT NOT NULL COMMENT '文件路径',
+                processing_status ENUM('pending', 'processing', 'success', 'failed', 'error') DEFAULT 'pending' COMMENT '处理状态',
+                text_content LONGTEXT COMMENT 'OCR识别的文本内容',
+                summary TEXT COMMENT 'AI生成的摘要',
+                keywords TEXT COMMENT 'AI提取的关键词',
+                ai_categories JSON COMMENT 'AI智能分类结果(JSON格式)',
+                ai_category_descriptions JSON COMMENT 'AI分类描述(JSON格式)',
+                ai_category_confidence DECIMAL(3,2) COMMENT 'AI分类置信度',
+                ai_tags JSON COMMENT 'AI生成的标签(JSON格式)',
+                processing_time INT COMMENT '处理耗时(秒)',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_file_id (file_id),
+                INDEX idx_file_path (file_path(255)),
+                INDEX idx_processing_status (processing_status),
+                INDEX idx_created_at (created_at),
+                FOREIGN KEY (file_id) REFERENCES research_files(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='OCR分析结果表'
+            """
+            
             with self.connection.begin() as trans:
                 self.connection.execute(text(create_files_table))
                 self.connection.execute(text(create_batch_table))
                 self.connection.execute(text(create_categories_table))
-                trans.commit()
+                self.connection.execute(text(create_ocr_analysis_table))
+                # trans.commit() 在SQLAlchemy 1.4中不需要手动调用，with语句会自动提交
             
             print("数据库表创建成功")
             
@@ -137,15 +163,27 @@ class DatabaseManager:
         """
         初始化文件分类数据
         """
-        categories = [
-            ('宏观经济', '宏观经济分析研报', '#FF6B6B'),
-            ('行业研究', '行业分析研报', '#4ECDC4'),
-            ('公司研究', '公司分析研报', '#45B7D1'),
-            ('投资策略', '投资策略研报', '#96CEB4'),
-            ('固定收益', '固定收益研报', '#FFEAA7'),
-            ('量化研究', '量化分析研报', '#DDA0DD'),
-            ('其他', '其他类型研报', '#95A5A6')
+        from config import FILE_CATEGORIES
+        
+        # 定义颜色方案
+        colors = [
+            '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#95A5A6',
+            '#FF9FF3', '#54A0FF', '#5F27CD', '#00D2D3', '#FF9F43', '#10AC84', '#EE5A24',
+            '#0984E3', '#6C5CE7', '#A29BFE', '#FD79A8', '#FDCB6E', '#E17055', '#81ECEC',
+            '#74B9FF', '#A29BFE', '#6C5CE7', '#FD79A8', '#FDCB6E', '#E17055', '#81ECEC'
         ]
+        
+        categories = []
+        for i, category in enumerate(FILE_CATEGORIES):
+            if isinstance(category, dict):
+                name = category['name']
+                description = category['description']
+            else:
+                name = category
+                description = f"{name}相关文档"
+            
+            color = colors[i % len(colors)]
+            categories.append((name, description, color))
         
         try:
             for category, description, color in categories:
@@ -158,7 +196,9 @@ class DatabaseManager:
                     'description': description,
                     'color': color
                 })
-            self.connection.commit()
+            # 在SQLAlchemy 1.4中，使用事务提交
+            with self.connection.begin():
+                pass  # 事务会自动提交
             print("分类数据初始化完成")
         except Exception as e:
             print(f"初始化分类数据失败: {e}")
@@ -235,7 +275,9 @@ class DatabaseManager:
                     error_count += len(batch_files)
                     print(f"批次上传出错: {e}")
             
-            self.connection.commit()
+            # 在SQLAlchemy 1.4中，使用事务提交
+            with self.connection.begin():
+                pass  # 事务会自动提交
             print(f"\n批次上传完成: {batch_name}")
             print(f"成功: {success_count} 个文件, 失败: {error_count} 个文件")
             
@@ -329,6 +371,129 @@ class DatabaseManager:
             print(f"搜索文件失败: {e}")
             return []
     
+    def save_ocr_analysis_result(self, file_id, file_path, analysis_result):
+        """
+        保存OCR分析结果到数据库
+        """
+        try:
+            import json
+            
+            # 准备数据
+            data = {
+                'file_id': file_id,
+                'file_path': file_path,
+                'processing_status': analysis_result.get('processing_status', 'success'),
+                'text_content': analysis_result.get('text_content', ''),
+                'summary': analysis_result.get('summary', ''),
+                'keywords': analysis_result.get('keywords', ''),
+                'ai_categories': json.dumps(analysis_result.get('categories', []), ensure_ascii=False),
+                'ai_category_descriptions': json.dumps(analysis_result.get('category_descriptions', []), ensure_ascii=False),
+                'ai_category_confidence': analysis_result.get('category_confidence', 0.0),
+                'ai_tags': json.dumps(analysis_result.get('tags', []), ensure_ascii=False),
+                'processing_time': analysis_result.get('processing_time', 0)
+            }
+            
+            # 检查是否已存在记录
+            check_sql = "SELECT id FROM ocr_analysis_results WHERE file_id = :file_id"
+            existing = self.connection.execute(text(check_sql), {'file_id': file_id}).fetchone()
+            
+            if existing:
+                # 更新现有记录
+                update_sql = """
+                UPDATE ocr_analysis_results SET
+                    file_path = :file_path,
+                    processing_status = :processing_status,
+                    text_content = :text_content,
+                    summary = :summary,
+                    keywords = :keywords,
+                    ai_categories = :ai_categories,
+                    ai_category_descriptions = :ai_category_descriptions,
+                    ai_category_confidence = :ai_category_confidence,
+                    ai_tags = :ai_tags,
+                    processing_time = :processing_time,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE file_id = :file_id
+                """
+                self.connection.execute(text(update_sql), data)
+                print(f"更新OCR分析结果: 文件ID {file_id}")
+            else:
+                # 插入新记录
+                insert_sql = """
+                INSERT INTO ocr_analysis_results (
+                    file_id, file_path, processing_status, text_content, summary, keywords,
+                    ai_categories, ai_category_descriptions, ai_category_confidence, ai_tags, processing_time
+                ) VALUES (
+                    :file_id, :file_path, :processing_status, :text_content, :summary, :keywords,
+                    :ai_categories, :ai_category_descriptions, :ai_category_confidence, :ai_tags, :processing_time
+                )
+                """
+                self.connection.execute(text(insert_sql), data)
+                print(f"保存OCR分析结果: 文件ID {file_id}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"保存OCR分析结果失败: {e}")
+            return False
+    
+    def get_ocr_analysis_result(self, file_id):
+        """
+        获取OCR分析结果
+        """
+        try:
+            import json
+            
+            sql = "SELECT * FROM ocr_analysis_results WHERE file_id = :file_id"
+            result = self.connection.execute(text(sql), {'file_id': file_id}).fetchone()
+            
+            if result:
+                # 解析JSON字段
+                analysis_result = dict(result._mapping)
+                analysis_result['ai_categories'] = json.loads(analysis_result['ai_categories'] or '[]')
+                analysis_result['ai_category_descriptions'] = json.loads(analysis_result['ai_category_descriptions'] or '[]')
+                analysis_result['ai_tags'] = json.loads(analysis_result['ai_tags'] or '[]')
+                return analysis_result
+            
+            return None
+            
+        except Exception as e:
+            print(f"获取OCR分析结果失败: {e}")
+            return None
+    
+    def get_all_ocr_analysis_results(self, limit=100, offset=0):
+        """
+        获取所有OCR分析结果
+        """
+        try:
+            import json
+            
+            sql = """
+            SELECT oar.*, rf.file_name, rf.extension 
+            FROM ocr_analysis_results oar
+            LEFT JOIN research_files rf ON oar.file_id = rf.id
+            ORDER BY oar.created_at DESC
+            LIMIT :limit OFFSET :offset
+            """
+            
+            results = self.connection.execute(text(sql), {
+                'limit': limit,
+                'offset': offset
+            }).fetchall()
+            
+            analysis_results = []
+            for result in results:
+                analysis_result = dict(result._mapping)
+                analysis_result['ai_categories'] = json.loads(analysis_result['ai_categories'] or '[]')
+                analysis_result['ai_category_descriptions'] = json.loads(analysis_result['ai_category_descriptions'] or '[]')
+                analysis_result['ai_tags'] = json.loads(analysis_result['ai_tags'] or '[]')
+                analysis_results.append(analysis_result)
+            
+            return analysis_results
+            
+        except Exception as e:
+            print(f"获取OCR分析结果列表失败: {e}")
+            return []
+
     def close(self):
         """
         关闭数据库连接

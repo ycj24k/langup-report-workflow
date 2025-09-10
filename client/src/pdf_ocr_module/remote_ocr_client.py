@@ -119,6 +119,56 @@ class RemoteOCRClient:
             logger.error(f"远程PPT处理异常: {e}")
             return {'status': 'error', 'message': str(e)}
     
+    def process_office(self, office_path: str, filename: str) -> Dict:
+        """
+        处理Office文档（Word/Excel）
+        
+        Args:
+            office_path: Office文档路径
+            filename: 文件名
+            
+        Returns:
+            处理结果
+        """
+        try:
+            if not os.path.exists(office_path):
+                return {'status': 'error', 'message': f'文件不存在: {office_path}'}
+            
+            logger.info(f"发送Office文档到远程GPU服务器: {filename}")
+            
+            # 根据文件类型设置MIME类型
+            file_ext = Path(filename).suffix.lower()
+            mime_types = {
+                '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                '.doc': 'application/msword',
+                '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                '.xls': 'application/vnd.ms-excel'
+            }
+            mime_type = mime_types.get(file_ext, 'application/octet-stream')
+            
+            with open(office_path, 'rb') as f:
+                files = {'file': (filename, f, mime_type)}
+                response = self.session.post(
+                    f"{self.server_url}/ocr/office",
+                    files=files
+                )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('status') == 'success':
+                    logger.info(f"远程Office文档处理成功: {filename}")
+                    return result
+                else:
+                    logger.error(f"远程Office文档处理失败: {result.get('message', '未知错误')}")
+                    return {'status': 'error', 'message': result.get('message', '处理失败')}
+            else:
+                logger.error(f"远程Office文档处理请求失败: {response.status_code}")
+                return {'status': 'error', 'message': f'服务器错误: {response.status_code}'}
+                
+        except Exception as e:
+            logger.error(f"远程Office文档处理异常: {e}")
+            return {'status': 'error', 'message': str(e)}
+    
     def process_image(self, image_path: str, filename: str) -> str:
         """
         处理图片OCR
