@@ -3,7 +3,6 @@
 ## 服务器信息
 - **地址**: 192.168.3.133:22
 - **账号**: spoce
-- **密码**: langup.cn
 - **系统**: Linux (无桌面，仅命令行)
 
 ## 部署步骤
@@ -19,27 +18,39 @@ ssh spoce@192.168.3.133 -p 22
 - `server/` 目录下的所有文件
 - 或者使用git克隆（如果代码在git仓库中）
 
-### 3. 运行部署脚本
+### 3. 环境与依赖（使用已配置的 paddleocr 环境）
+在服务器已激活的 paddleocr 环境中（你本机已就绪），仅当缺少以下依赖时再按需安装：
 ```bash
-# 进入server目录
-cd server
+# 布局检测（必需）
+pip install --no-cache-dir ultralytics==8.2.103
 
-# 给脚本执行权限
-chmod +x deploy_linux.sh
+# 上传接口所需（若未安装）
+pip install --no-cache-dir python-multipart
 
-# 运行部署脚本
-./deploy_linux.sh
+# 可选：PPTX 支持（解析文本 + 对图片做OCR）
+pip install --no-cache-dir python-pptx
+
+# 可选：OpenCV 纯CPU版本（如出现 libGL 报错再装）
+pip install --no-cache-dir opencv-python-headless==4.10.0.84
 ```
 
-### 4. 启动服务
-```bash
-# 方式1：使用systemd服务（推荐）
-sudo systemctl start ocr-service
+### 4. 布局模型与权重
+将布局检测权重统一放在目录：`/home/spoce/ocr_service/src/models/`
 
-# 方式2：直接运行（用于测试）
-chmod +x start_service.sh
-./start_service.sh
+要求文件名与配置一致：
 ```
+doclayout_yolo_ft.pt
+yolov10l_ft.pt
+```
+配置文件：`server/src/config.py` → `LAYOUT_CONFIG`。
+若未放置，将回退到 `yolov8n.pt`（效果较差）。
+
+### 5. 启动服务
+```bash
+cd /home/spoce/ocr_service
+python remote_ocr_server.py
+```
+启动成功后日志应包含：`🚀 GPU OCR服务启动成功！`。
 
 ### 5. 验证服务
 ```bash
@@ -63,7 +74,7 @@ sudo systemctl restart ocr-service  # 重启
 sudo systemctl status ocr-service   # 查看状态
 ```
 
-### 查看日志
+### 查看日志（如以 systemd 部署）
 ```bash
 # 实时查看日志
 sudo journalctl -u ocr-service -f
@@ -84,28 +95,15 @@ sudo systemctl enable ocr-service
 sudo systemctl disable ocr-service
 ```
 
-## 模型与权重
+## API 接口
 
-服务端布局检测模型统一放在目录：`server/src/models/`
+服务启动后，常用接口：
 
-请将以下文件放入该目录（文件名需与配置一致）：
-
-- `doclayout_yolo_ft.pt`
-- `yolov10l_ft.pt`
-
-相关配置在 `server/src/config.py` 的 `LAYOUT_CONFIG` 中：
-
-```
-LAYOUT_CONFIG = {
-    "model_path": str(MODELS_DIR / "doclayout_yolo_ft.pt"),
-    "fallback_model": str(MODELS_DIR / "yolov10l_ft.pt"),
-    ...
-}
-```
-
-注意：
-- 若未放置这些权重，服务端将尝试回退到通用YOLO权重，识别效果可能下降。
-- 如更改权重文件名/路径，请同步修改 `LAYOUT_CONFIG`。
+- 健康检查: `GET http://192.168.3.133:8888/health`
+- GPU 信息: `GET http://192.168.3.133:8888/gpu`
+- PDF OCR: `POST http://192.168.3.133:8888/ocr/pdf` (form-data: file)
+- 图片 OCR: `POST http://192.168.3.133:8888/ocr/image` (form-data: file)
+- PPTX OCR: `POST http://192.168.3.133:8888/ocr/ppt` (form-data: file，需安装 python-pptx)
 
 ## API接口
 
@@ -123,11 +121,8 @@ LAYOUT_CONFIG = {
 # 查看详细错误信息
 sudo journalctl -u ocr-service -n 50
 
-# 检查Python环境
-cd /home/spoce/ocr_service
-source venv/bin/activate
-python --version
-pip list
+# 直接前台启动看堆栈
+cd /home/spoce/ocr_service && python remote_ocr_server.py
 ```
 
 ### 2. GPU不可用
@@ -144,7 +139,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 # 查看端口占用
 sudo netstat -tlnp | grep 8888
 
-# 修改端口（编辑remote_ocr_server.py）
+# 如需改端口（编辑 remote_ocr_server.py）
 # uvicorn.run(app, host="0.0.0.0", port=8889)
 ```
 
@@ -162,13 +157,14 @@ chmod +x /home/spoce/ocr_service/remote_ocr_server.py
 
 当需要更新代码时：
 ```bash
-# 停止服务
+# 方式A：前台运行
+cd /home/spoce/ocr_service
+# 同步/替换文件后直接重启进程（Ctrl+C 结束，再运行）
+python remote_ocr_server.py
+
+# 方式B：如使用 systemd
 sudo systemctl stop ocr-service
-
-# 更新代码文件
-# （上传新文件或git pull）
-
-# 重启服务
+# 同步文件后
 sudo systemctl start ocr-service
 ```
 
@@ -178,3 +174,13 @@ sudo systemctl start ocr-service
 2. **GPU内存**: 确保GPU有足够内存运行模型
 3. **磁盘空间**: 确保有足够空间存储模型和临时文件
 4. **网络**: 确保服务器可以访问外网下载依赖
+
+## PPT 文件处理说明
+
+- PPTX（.pptx）：安装 `python-pptx` 后可直接上传识别；文本直接解析，图片会额外走 OCR 补充。
+- PPT（.ppt）：Linux 环境不建议启用 COM 接口，推荐先转换为 PDF 再走 PDF OCR。
+  ```bash
+  sudo apt-get update && sudo apt-get install -y libreoffice
+  libreoffice --headless --convert-to pdf your.ppt --outdir /tmp
+  # 将 /tmp/your.pdf 上传至 /ocr/pdf
+  ```
