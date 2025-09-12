@@ -62,13 +62,17 @@ class ResearchFileManager:
         # 初始化GUI
         self.gui = ResearchFileGUI()
         
-        # 设置回调函数
+        # 设置回调函数和文件扫描器
         self.gui.set_callbacks(
             scan_callback=self.scan_files,
             upload_callback=self.upload_to_database,
             clear_cache_callback=self.clear_cache,
             parse_callback=self.parse_files
         )
+        
+        # 传递file_scanner和cache_manager给GUI
+        self.gui.file_scanner = self.file_scanner
+        self.gui.cache_manager = self.cache_manager
         
         # 启动时尝试加载缓存中的上次扫描结果
         try:

@@ -269,7 +269,7 @@ class IncrementalScanner:
                     updated_files.append(file_info)
                     self.cache_manager.update_file_cache(file_path, file_info)
             else:
-                # 文件未变化
+                # 文件未变化，直接使用缓存中的完整信息（包含用户设置）
                 file_info = cached_files[file_path]
                 if self._is_current_year_file(file_info):
                     unchanged_files.append(file_info)
@@ -322,8 +322,8 @@ class IncrementalScanner:
             print(f"获取文件列表失败: {e}")
         return current_files
     
-    def _get_file_info(self, file_path: str) -> dict:
-        """获取文件信息"""
+    def _get_file_info(self, file_path: str, preserve_existing: bool = True) -> dict:
+        """获取文件信息，可选择保留已有的用户设置"""
         try:
             stat = os.stat(file_path)
             creation_time = datetime.fromtimestamp(stat.st_ctime)
@@ -331,20 +331,56 @@ class IncrementalScanner:
             access_time = datetime.fromtimestamp(stat.st_atime)
             file_size = round(stat.st_size / (1024 * 1024), 2)
             
-            return {
+            # 基础文件信息
+            file_info = {
                 'file_name': os.path.basename(file_path),
                 'file_path': file_path,
                 'file_size_mb': file_size,
                 'creation_date': creation_time,
                 'modification_date': modification_time,
                 'access_date': access_time,
-                'extension': os.path.splitext(file_path)[1].lower(),
-                'category': '',
-                'importance': '',
-                'tags': '',
-                'notes': '',
-                'status': 'new'  # 新增状态字段
+                'extension': os.path.splitext(file_path)[1].lower()
             }
+            
+            # 如果需要保留已有信息，尝试从缓存中获取
+            if preserve_existing:
+                cached_files = self.cache_manager.get_cached_files()
+                if file_path in cached_files:
+                    existing_info = cached_files[file_path]
+                    # 保留用户设置的状态信息
+                    file_info.update({
+                        'category': existing_info.get('category', ''),
+                        'importance': existing_info.get('importance', ''),
+                        'tags': existing_info.get('tags', ''),
+                        'notes': existing_info.get('notes', ''),
+                        'status': existing_info.get('status', 'new'),
+                        'compliance_status': existing_info.get('compliance_status', '待定'),
+                        'parsing_status': existing_info.get('parsing_status', '未解析')
+                    })
+                else:
+                    # 新文件的默认状态
+                    file_info.update({
+                        'category': '',
+                        'importance': '',
+                        'tags': '',
+                        'notes': '',
+                        'status': 'new',
+                        'compliance_status': '待定',
+                        'parsing_status': '未解析'
+                    })
+            else:
+                # 不保留已有信息，使用默认值
+                file_info.update({
+                    'category': '',
+                    'importance': '',
+                    'tags': '',
+                    'notes': '',
+                    'status': 'new',
+                    'compliance_status': '待定',
+                    'parsing_status': '未解析'
+                })
+            
+            return file_info
         except Exception as e:
             print(f"获取文件信息失败 {file_path}: {e}")
             return {}

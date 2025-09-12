@@ -69,7 +69,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 全局变量（仅在启动时初始化，一直常驻内存）
+# 全局变量（兼容旧逻辑），同时使用 app.state 保存，确保在各 worker/路由共享
 pdf_processor = None
 ppt_processor = None
 ocr_engine = None
@@ -127,6 +127,13 @@ async def startup_event():
         office_processor = OfficeProcessor(use_gpu=False)
         logger.info("Office处理器初始化成功")
         
+        # 保存到 app.state，确保路由读取的一致性
+        app.state.ocr_engine = ocr_engine
+        app.state.pdf_processor = pdf_processor
+        app.state.ppt_processor = ppt_processor
+        app.state.office_processor = office_processor
+        app.state.initialized = True
+
         # 预热，减少首个请求的冷启动延迟
         _warmup_once()
 
@@ -144,11 +151,12 @@ async def root():
         "service": "GPU OCR Service",
         "gpu_enabled": True,
         "llm_enabled": False,
+        "initialized": bool(getattr(app.state, "initialized", False)),
         "gpu_info": _probe_gpu_info(),
         "components": {
-            "pdf_processor": pdf_processor is not None,
-            "ppt_processor": ppt_processor is not None,
-            "ocr_engine": ocr_engine is not None
+            "pdf_processor": bool(getattr(app.state, "pdf_processor", None)),
+            "ppt_processor": bool(getattr(app.state, "ppt_processor", None)),
+            "ocr_engine": bool(getattr(app.state, "ocr_engine", None))
         }
     }
 
@@ -156,7 +164,8 @@ async def root():
 async def process_pdf(file: UploadFile = File(...)):
     """处理PDF文件OCR"""
     try:
-        if not pdf_processor:
+        proc = getattr(app.state, "pdf_processor", None) or pdf_processor
+        if not proc:
             raise HTTPException(status_code=500, detail="PDF处理器未初始化")
         
         # 保存上传的文件到临时目录
@@ -168,20 +177,18 @@ async def process_pdf(file: UploadFile = File(...)):
         try:
             # 处理PDF
             logger.info(f"开始处理PDF: {file.filename}")
-            result = pdf_processor.process_pdf(tmp_file_path, file.filename)
+            result = proc.process_pdf(tmp_file_path, file.filename)
             
             # 清理临时文件
             os.unlink(tmp_file_path)
             
             if result.get('status') == 'success':
-                logger.info(f"PDF处理成功: {file.filename}")
                 return {
                     "status": "success",
                     "filename": file.filename,
                     "result": result
                 }
             else:
-                logger.error(f"PDF处理失败: {file.filename}")
                 return {
                     "status": "error",
                     "filename": file.filename,
@@ -202,7 +209,8 @@ async def process_pdf(file: UploadFile = File(...)):
 async def process_ppt(file: UploadFile = File(...)):
     """处理PPT文件OCR"""
     try:
-        if not ppt_processor:
+        proc = getattr(app.state, "ppt_processor", None) or ppt_processor
+        if not proc:
             raise HTTPException(status_code=500, detail="PPT处理器未初始化")
         
         # 保存上传的文件到临时目录
@@ -215,7 +223,7 @@ async def process_ppt(file: UploadFile = File(...)):
         try:
             # 处理PPT
             logger.info(f"开始处理PPT: {file.filename}")
-            result = ppt_processor.process_ppt(tmp_file_path, file.filename)
+            result = proc.process_ppt(tmp_file_path, file.filename)
             
             # 清理临时文件
             os.unlink(tmp_file_path)
@@ -264,7 +272,10 @@ async def process_office(file: UploadFile = File(...)):
         
         try:
             # 使用Office处理器处理文档
-            result = office_processor.process_office_document(tmp_file_path, file.filename)
+            proc = getattr(app.state, "office_processor", None) or office_processor
+            if not proc:
+                raise HTTPException(status_code=500, detail="Office处理器未初始化")
+            result = proc.process_office_document(tmp_file_path, file.filename)
             
             if result.get('status') == 'success':
                 logger.info(f"Office文档处理成功: {file.filename}")
@@ -290,7 +301,8 @@ async def process_office(file: UploadFile = File(...)):
 async def process_image(file: UploadFile = File(...)):
     """处理图片OCR"""
     try:
-        if not ocr_engine:
+        engine = getattr(app.state, "ocr_engine", None) or ocr_engine
+        if not engine:
             raise HTTPException(status_code=500, detail="OCR引擎未初始化")
         
         # 保存上传的文件到临时目录
@@ -302,7 +314,7 @@ async def process_image(file: UploadFile = File(...)):
         try:
             # 处理图片
             logger.info(f"开始处理图片: {file.filename}")
-            result = ocr_engine.extract_text_direct(tmp_file_path)
+            result = engine.extract_text_direct(tmp_file_path)
             
             # 清理临时文件
             os.unlink(tmp_file_path)
@@ -331,11 +343,12 @@ async def health_check():
         "status": "healthy",
         "gpu_available": True,
         "llm_enabled": False,
+        "initialized": bool(getattr(app.state, "initialized", False)),
         "gpu_info": _probe_gpu_info(),
         "components": {
-            "pdf_processor": pdf_processor is not None,
-            "ppt_processor": ppt_processor is not None,
-            "ocr_engine": ocr_engine is not None
+            "pdf_processor": bool(getattr(app.state, "pdf_processor", None)),
+            "ppt_processor": bool(getattr(app.state, "ppt_processor", None)),
+            "ocr_engine": bool(getattr(app.state, "ocr_engine", None))
         }
     }
 

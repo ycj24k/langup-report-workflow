@@ -89,6 +89,24 @@ class ResearchFileGUI:
         
         self.create_widgets()
         self.setup_layout()
+        # 辅助：软更新服务端状态，避免闪烁
+        self._last_server_status = ("服务端: 未检测", "secondary")
+    
+    def _set_server_status_soft(self, text: str, style: str):
+        try:
+            cur_text = self.server_status_label.cget("text")
+            cur_style = self.server_status_label.cget("bootstyle") if hasattr(self.server_status_label, 'cget') else None
+        except Exception:
+            cur_text, cur_style = self._last_server_status
+        # 若当前已是成功态且新状态是失败，进行软更新：仅当连续两次失败才真正覆盖
+        last_text, last_style = self._last_server_status
+        if last_style == "success" and style in ("danger", "warning"):
+            # 记录，但不立刻覆盖
+            self._last_server_status = (text, style)
+            return
+        # 正常更新
+        self.server_status_label.config(text=text, bootstyle=style)
+        self._last_server_status = (text, style)
         
     def create_widgets(self):
         """
@@ -555,9 +573,24 @@ class ResearchFileGUI:
         # 初始时隐藏不符合原因输入框
         self.compliance_reason_entry.grid_remove()
         
+        # 解析状态选择
+        ttk_bs.Label(self.classify_frame, text="解析状态:").grid(
+            row=3, column=0, sticky=W, padx=(0, 10), pady=5
+        )
+        self.parsing_status_var = tk.StringVar()
+        self.parsing_status_combo = ttk_bs.Combobox(
+            self.classify_frame,
+            textvariable=self.parsing_status_var,
+            values=PARSING_STATUS,
+            state="readonly",
+            width=20
+        )
+        self.parsing_status_combo.grid(row=3, column=1, sticky=W, pady=5)
+        self.parsing_status_combo.bind('<<ComboboxSelected>>', self.on_parsing_status_change)
+        
         # 重要性选择
         ttk_bs.Label(self.classify_frame, text="重要性:").grid(
-            row=3, column=0, sticky=W, padx=(0, 10), pady=5
+            row=4, column=0, sticky=W, padx=(0, 10), pady=5
         )
         self.importance_var = tk.StringVar()
         self.importance_combo = ttk_bs.Combobox(
@@ -567,17 +600,17 @@ class ResearchFileGUI:
             state="readonly",
             width=20
         )
-        self.importance_combo.grid(row=3, column=1, sticky=W, pady=5)
+        self.importance_combo.grid(row=4, column=1, sticky=W, pady=5)
         self.importance_combo.bind('<<ComboboxSelected>>', self.on_importance_change)
         
         # 标签选择
         ttk_bs.Label(self.classify_frame, text="标签:").grid(
-            row=4, column=0, sticky=W+N, padx=(0, 10), pady=5
+            row=5, column=0, sticky=W+N, padx=(0, 10), pady=5
         )
         
         # 标签选择框架
         tags_frame = ttk_bs.Frame(self.classify_frame)
-        tags_frame.grid(row=4, column=1, sticky=W, pady=5)
+        tags_frame.grid(row=5, column=1, sticky=W, pady=5)
         
         # 标签输入框
         self.tags_var = tk.StringVar()
@@ -611,7 +644,7 @@ class ResearchFileGUI:
         
         # 备注输入
         ttk_bs.Label(self.classify_frame, text="备注:").grid(
-            row=5, column=0, sticky=W+N, padx=(0, 10), pady=5
+            row=6, column=0, sticky=W+N, padx=(0, 10), pady=5
         )
         self.notes_text = tk.Text(
             self.classify_frame,
@@ -619,12 +652,12 @@ class ResearchFileGUI:
             height=4,
             wrap=tk.WORD
         )
-        self.notes_text.grid(row=5, column=1, sticky=W, pady=5)
+        self.notes_text.grid(row=6, column=1, sticky=W, pady=5)
         self.notes_text.bind('<KeyRelease>', self.on_notes_change)
         
         # 操作按钮
         self.action_frame = ttk_bs.Frame(self.classify_frame)
-        self.action_frame.grid(row=6, column=0, columnspan=2, pady=10)
+        self.action_frame.grid(row=7, column=0, columnspan=2, pady=10)
         
         self.save_btn = ttk_bs.Button(
             self.action_frame,
@@ -817,10 +850,10 @@ class ResearchFileGUI:
         self.stats_text.pack(side=LEFT, fill=BOTH, expand=True)
         self.stats_scroll.pack(side=RIGHT, fill=Y)
         
-        # 启动后自动检测一次服务端，并每30秒轮询
+        # 启动后自动检测一次服务端，并每60秒轮询（减少频率）
         try:
             self.root.after(1000, self.check_server_health)
-            self.root.after(30000, self._schedule_server_check)
+            self.root.after(60000, self._schedule_server_check)
         except Exception:
             pass
         
@@ -837,8 +870,8 @@ class ResearchFileGUI:
         try:
             self.check_server_health()
         finally:
-            # 30秒后再次检测
-            self.root.after(30000, self._schedule_server_check)
+            # 60秒后再次检测（减少频率）
+            self.root.after(60000, self._schedule_server_check)
         
         # 启动OCR进度更新
         self._schedule_ocr_progress_update()
@@ -846,10 +879,14 @@ class ResearchFileGUI:
     def _schedule_ocr_progress_update(self):
         """定期更新OCR进度"""
         try:
-            self.update_ocr_progress()
+            # 只在有运行中的任务时才更新
+            if hasattr(self, 'file_scanner') and self.file_scanner:
+                stats = self.file_scanner.get_ocr_progress()
+                if stats['running'] > 0 or stats['total_tasks'] > 0:
+                    self.update_ocr_progress()
         finally:
-            # 1秒后再次更新
-            self.root.after(1000, self._schedule_ocr_progress_update)
+            # 5秒后再次更新（进一步减少频率，避免闪烁）
+            self.root.after(5000, self._schedule_ocr_progress_update)
     
     def update_ocr_progress(self):
         """更新OCR进度显示"""
@@ -861,28 +898,82 @@ class ResearchFileGUI:
                 total_tasks = stats['total_tasks']
                 running_count = stats['running']
                 completed_count = stats['completed']
+                failed_count = stats['failed']
                 
                 if total_tasks > 0:
-                    progress = (completed_count / total_tasks) * 100
+                    # 计算进度（包含失败的任务）
+                    finished_count = completed_count + failed_count
+                    progress = (finished_count / total_tasks) * 100
                     self.ocr_progress_bar['value'] = progress
-                    self.ocr_progress_label.config(text=f"OCR: {completed_count}/{total_tasks}")
                     
-                    # 显示正在运行的任务
+                    # 构建详细状态信息
+                    status_parts = []
+                    if running_count > 0:
+                        status_parts.append(f"运行中: {running_count}")
+                    if completed_count > 0:
+                        status_parts.append(f"完成: {completed_count}")
+                    if failed_count > 0:
+                        status_parts.append(f"失败: {failed_count}")
+                    
+                    base_text = f"OCR: {finished_count}/{total_tasks}"
+                    if status_parts:
+                        base_text += f" ({', '.join(status_parts)})"
+                    
+                    # 显示正在运行的任务详情
                     if running_tasks:
-                        running_files = [os.path.basename(task.file_path) for task in running_tasks]
-                        self.ocr_progress_label.config(text=f"OCR: {completed_count}/{total_tasks} (处理中: {', '.join(running_files[:2])}{'...' if len(running_files) > 2 else ''})")
+                        current_task = running_tasks[0]  # 显示第一个正在运行的任务
+                        file_name = os.path.basename(current_task.file_path)
+                        if len(file_name) > 25:
+                            file_name = file_name[:22] + "..."
+                        
+                        # 显示任务状态消息
+                        task_msg = ""
+                        if hasattr(current_task, 'message') and current_task.message:
+                            if current_task.message != "正在处理...":
+                                task_msg = f" - {current_task.message}"
+                        
+                        base_text += f" | 处理中: {file_name}{task_msg}"
+                        
+                        if len(running_tasks) > 1:
+                            base_text += f" (+{len(running_tasks)-1}个)"
+                    
+                    self.ocr_progress_label.config(text=base_text)
+                    
+                    # 如果所有任务完成，延迟隐藏进度条
+                    if running_count == 0 and total_tasks > 0:
+                        self.root.after(3000, self._hide_progress_if_done)
+                        
                 else:
                     self.ocr_progress_bar['value'] = 0
-                    self.ocr_progress_label.config(text="OCR: 0/0")
+                    self.ocr_progress_label.config(text="")
+                    
         except Exception as e:
             print(f"更新OCR进度失败: {e}")
+    
+    def _hide_progress_if_done(self):
+        """如果任务完成则隐藏进度条"""
+        try:
+            if hasattr(self, 'file_scanner') and self.file_scanner:
+                stats = self.file_scanner.get_ocr_progress()
+                if stats['running'] == 0 and stats['total_tasks'] > 0:
+                    # 显示最终结果2秒
+                    final_text = f"OCR完成: {stats['completed']}/{stats['total_tasks']}"
+                    if stats['failed'] > 0:
+                        final_text += f" (失败: {stats['failed']})"
+                    self.ocr_progress_label.config(text=final_text)
+                    
+                    # 2秒后清空
+                    self.root.after(2000, lambda: self.ocr_progress_label.config(text=""))
+        except:
+            pass
 
     def check_server_health(self):
         """检测远程OCR服务健康状态并在GUI显示"""
         def worker():
             url = f"{self.server_url}/health"
             try:
-                resp = requests.get(url, timeout=3)
+                # 放宽超时，避免瞬时网络抖动导致“不可达”闪烁
+                resp = requests.get(url, timeout=5)
                 ok = (resp.status_code == 200)
                 data = {}
                 try:
@@ -903,9 +994,14 @@ class ResearchFileGUI:
                     label += ")"
                     self.root.after(0, lambda: self.server_status_label.config(text=label, bootstyle="success"))
                 else:
-                    self.root.after(0, lambda: self.server_status_label.config(text="服务端: 故障", bootstyle="danger"))
+                    # 失败时不立刻覆盖已有状态，避免闪烁；仅在当前为成功态时改为预警
+                    self.root.after(0, lambda: self._set_server_status_soft("服务端: 故障", "danger"))
             except Exception:
-                self.root.after(0, lambda: self.server_status_label.config(text="服务端: 不可达", bootstyle="danger"))
+                # 同上，采用soft更新
+                self.root.after(0, lambda: self._set_server_status_soft("服务端: 不可达", "danger"))
+        
+        
+        
         threading.Thread(target=worker, daemon=True).start()
         
     def scan_files(self):
@@ -1147,8 +1243,59 @@ class ResearchFileGUI:
     
     def _on_ocr_progress(self, task_id):
         """OCR任务进度回调"""
-        # 这个方法会被任务管理器调用
-        pass
+        try:
+            # 获取任务状态
+            if hasattr(self, 'file_scanner') and self.file_scanner:
+                task = self.file_scanner.task_manager.get_task_status(task_id)
+                if task:
+                    # 只在任务完成或失败时显示状态信息
+                    if task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                        if task.status == TaskStatus.COMPLETED:
+                            print(f"✅ OCR完成: {os.path.basename(task.file_path)}")
+                        else:
+                            print(f"❌ OCR失败: {os.path.basename(task.file_path)} - {task.error}")
+                        
+                        # 更新文件树显示
+                        self._update_file_tree_after_ocr(task)
+                        
+                        # 更新状态栏
+                        self.status_label.config(text=f"OCR完成: {os.path.basename(task.file_path)}")
+                        
+        except Exception as e:
+            print(f"处理进度回调失败: {e}")
+    
+    def _update_file_tree_after_ocr(self, task):
+        """OCR完成后更新文件树显示"""
+        try:
+            # 根据任务结果更新解析状态
+            if task.status == TaskStatus.COMPLETED:
+                parsing_status = '已解析'
+            else:
+                parsing_status = '解析失败'
+            
+            # 更新文件树中对应的项（优先用文件名匹配，路径匹配作为补充）
+            target_name = os.path.basename(task.file_path)
+            updated = False
+            
+            for item in self.file_tree.get_children():
+                item_values = self.file_tree.item(item)['values']
+                if item_values and len(item_values) > 2:
+                    name_match = (item_values[2] == target_name)
+                    path_match = (len(item_values) > 1 and item_values[1] == task.file_path)
+                    if name_match or path_match:
+                        current_values = list(item_values)
+                        if len(current_values) >= 10:
+                            current_values[9] = parsing_status  # 解析状态列
+                            self.file_tree.item(item, values=tuple(current_values))
+                            updated = True
+                            print(f"✅ 文件树已更新: {target_name} -> {parsing_status}")
+                        break
+            
+            if not updated:
+                print(f"⚠️ 未找到匹配的文件项: {target_name}")
+                        
+        except Exception as e:
+            print(f"更新文件树失败: {e}")
     
     def on_parse_complete(self, success):
         """
@@ -1451,6 +1598,9 @@ class ResearchFileGUI:
             self.compliance_var.set(file_data.get('compliance_status', '待定'))
             self.compliance_reason_var.set(file_data.get('compliance_reason', ''))
             
+            # 更新解析状态
+            self.parsing_status_var.set(file_data.get('parsing_status', '未解析'))
+            
             # 根据符合状态显示/隐藏原因输入框
             if file_data.get('compliance_status') == '不符合':
                 self.compliance_reason_entry.grid()
@@ -1639,6 +1789,15 @@ class ResearchFileGUI:
         """
         if 0 <= self.current_file_index < len(self.files_data):
             self.files_data[self.current_file_index]['compliance_reason'] = self.compliance_reason_var.get()
+            self.unsaved_changes = True
+    
+    def on_parsing_status_change(self, event):
+        """
+        解析状态改变事件
+        """
+        if 0 <= self.current_file_index < len(self.files_data):
+            new_status = self.parsing_status_var.get()
+            self.files_data[self.current_file_index]['parsing_status'] = new_status
             self.unsaved_changes = True
     
     def on_tags_change(self, event):
@@ -2006,10 +2165,60 @@ class ResearchFileGUI:
         """
         保存当前文件的修改
         """
-        if self.unsaved_changes:
+        if not self.unsaved_changes or not hasattr(self, 'files_data') or not self.files_data:
+            return
+            
+        try:
+            # 获取当前文件数据
+            current_file = self.files_data[self.current_file_index]
+            file_path = current_file['file_path']
+            
+            # 更新文件信息
+            current_file['category'] = self.category_var.get()
+            current_file['importance'] = self.importance_var.get()
+            current_file['tags'] = self.tags_var.get()
+            current_file['notes'] = self.notes_text.get("1.0", "end-1c")
+            current_file['compliance_status'] = self.compliance_var.get()
+            current_file['parsing_status'] = self.parsing_status_var.get()
+            
+            # 如果有缓存管理器，保存到缓存
+            if hasattr(self, 'cache_manager') and self.cache_manager:
+                self.cache_manager.update_file_cache(file_path, current_file)
+                self.cache_manager.save_cache()
+            
+            # 更新树形控件显示
+            self.update_tree_item(current_file)
+            
             self.unsaved_changes = False
             self.status_label.config(text="修改已保存")
-            messagebox.showinfo("成功", "文件信息已保存")
+            print(f"文件信息已保存: {file_path}")
+            
+        except Exception as e:
+            print(f"保存文件信息失败: {e}")
+            messagebox.showerror("错误", f"保存失败: {e}")
+    
+    def update_tree_item(self, file_data):
+        """更新树形控件中的文件项"""
+        try:
+            # 查找对应的树形项
+            for item in self.file_tree.get_children():
+                item_values = self.file_tree.item(item)['values']
+                if item_values and len(item_values) > 2:  # 第3列是文件名
+                    # 通过文件名匹配（更可靠）
+                    if item_values[2] == file_data['file_name']:
+                        # 获取现有值，只更新需要更新的列
+                        current_values = list(item_values)
+                        # 更新分类、重要性、符合状态、解析状态列
+                        if len(current_values) >= 12:
+                            current_values[10] = file_data.get('category', '')      # 分类列
+                            current_values[11] = file_data.get('importance', '')   # 重要性列
+                            current_values[8] = file_data.get('compliance_status', '待定')  # 符合状态列
+                            current_values[9] = file_data.get('parsing_status', '未解析')   # 解析状态列
+                            
+                            self.file_tree.item(item, values=tuple(current_values))
+                        break
+        except Exception as e:
+            print(f"更新树形项失败: {e}")
     
     def next_file(self):
         """
