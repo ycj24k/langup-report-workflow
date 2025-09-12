@@ -340,42 +340,6 @@ class FileScanner:
         print(f"解析完成，共处理 {len(results)} 个文件")
         return results
 
-    def _ocr_pdf_adapter(self, file_path):
-        """PDF OCR适配器方法"""
-        file_info = self._get_file_basic_info(file_path)
-        return self._process_pdf_file(file_path, file_info)
-    
-    def _ocr_ppt_adapter(self, file_path):
-        """PPT OCR适配器方法"""
-        file_info = self._get_file_basic_info(file_path)
-        return self._process_ppt_file(file_path, file_info)
-    
-    def _ocr_office_adapter(self, file_path):
-        """Office OCR适配器方法"""
-        file_info = self._get_file_basic_info(file_path)
-        return self._process_office_file(file_path, file_info)
-    
-    def _get_file_basic_info(self, file_path):
-        """获取文件基本信息"""
-        try:
-            stat = os.stat(file_path)
-            return {
-                'file_path': file_path,
-                'file_name': os.path.basename(file_path),
-                'file_size': stat.st_size / (1024 * 1024),  # MB
-                'creation_date': datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S'),
-                'modification_date': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-                'access_date': datetime.fromtimestamp(stat.st_atime).strftime('%Y-%m-%d %H:%M:%S'),
-                'status': 'processing'
-            }
-        except Exception as e:
-            print(f"获取文件信息失败: {e}")
-            return {
-                'file_path': file_path,
-                'file_name': os.path.basename(file_path),
-                'status': 'processing'
-            }
-
     def submit_ocr_tasks(self, file_paths, progress_callback=None):
         """提交OCR任务到任务管理器"""
         if not file_paths:
@@ -383,10 +347,6 @@ class FileScanner:
             return []
         
         print(f"提交 {len(file_paths)} 个OCR任务")
-        
-        # 设置进度回调
-        if progress_callback and hasattr(self.task_manager, 'progress_callback'):
-            self.task_manager.progress_callback = progress_callback
         
         task_ids = []
         for file_path in file_paths:
@@ -396,28 +356,15 @@ class FileScanner:
                     print(f"文件正在处理中，跳过: {file_path}")
                     continue
                 
-                # 确定文件类型
-                file_ext = Path(file_path).suffix.lower()
-                
-                # 根据文件类型选择处理器
-                if file_ext == '.pdf':
-                    processor_func = self._ocr_pdf_adapter
-                    file_type = 'pdf'
-                elif file_ext in ['.ppt', '.pptx']:
-                    processor_func = self._ocr_ppt_adapter
-                    file_type = 'ppt'
-                elif file_ext in ['.doc', '.docx', '.xls', '.xlsx']:
-                    processor_func = self._ocr_office_adapter
-                    file_type = 'office'
-                else:
-                    print(f"不支持的文件类型: {file_ext}")
-                    continue
-                
-                # 提交任务到任务管理器
-                task_id = self.task_manager.submit_task(
+                # 创建OCR任务
+                task = OCRTask(
                     file_path=file_path,
-                    file_type=file_type
+                    task_type="ocr_analysis",
+                    callback=progress_callback
                 )
+                
+                # 提交任务
+                task_id = self.task_manager.submit_task(task)
                 task_ids.append(task_id)
                 
                 print(f"OCR任务已提交: {file_path} (ID: {task_id})")

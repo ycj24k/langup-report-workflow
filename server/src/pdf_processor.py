@@ -37,27 +37,15 @@ class PDFProcessor:
         else:
             self.ocr_engine = OCREngine(use_gpu=use_gpu)
         
-        # 服务器端只负责OCR，LLM可选
-        self.llm_processor = LLMProcessor() if LLMProcessor else None
+        # 服务器端只负责OCR，禁用所有LLM以避免延迟
+        self.llm_processor = None
         self.mode = "快速"
         # 基础分辨率（可根据模式覆盖）
         self.target_resolution = IMAGE_CONFIG["target_resolution"]
         self.high_resolution = IMAGE_CONFIG["high_resolution"]
         
-        # 远程OCR客户端
+        # 服务端禁用远程OCR客户端，避免循环调用
         self.remote_client = None
-        if REMOTE_OCR_CONFIG.get("enabled", False):
-            try:
-                from .remote_ocr_client import RemoteOCRClient
-                self.remote_client = RemoteOCRClient(REMOTE_OCR_CONFIG["server_url"])
-                if self.remote_client.check_server_health():
-                    logger.info("远程GPU OCR服务连接成功")
-                else:
-                    logger.warning("远程GPU OCR服务连接失败，将使用本地OCR")
-                    self.remote_client = None
-            except Exception as e:
-                logger.warning(f"远程OCR客户端初始化失败: {e}")
-                self.remote_client = None
 
     def set_mode(self, mode: str):
         """设置解析模式：快速/精细"""
@@ -142,7 +130,6 @@ class PDFProcessor:
                 
                 for page_num in range(total_pages):
                     page = pdf[page_num]
-                    logger.info(f"处理第{page_num + 1}页")
                     
                     # 处理单页
                     page_result = self._process_single_page(page, page_num, output_path)
@@ -152,9 +139,8 @@ class PDFProcessor:
                         all_texts.extend(page_result['texts'])
                         all_figures.extend(page_result['figures'])
                         all_tables.extend(page_result['tables'])
-                        logger.info(f"第{page_num + 1}页处理成功，提取到{len(page_result['texts'])}个文本区域")
                     else:
-                        logger.warning(f"第{page_num + 1}页处理失败，尝试强制提取文本")
+                        # 静默处理失败页面
                         # 强制提取文本，即使处理失败
                         try:
                             # 生成标准分辨率图像
@@ -181,9 +167,10 @@ class PDFProcessor:
                         except Exception as e:
                             logger.error(f"第{page_num + 1}页强制提取出错: {e}")
                     
-                    # 进度更新
+                    # 进度更新（减少日志输出）
                     progress = (page_num + 1) / total_pages * 100
-                    logger.info(f"处理进度: {progress:.1f}%")
+                    if progress % 20 == 0 or progress == 100:  # 只在20%、40%、60%、80%、100%时输出
+                        logger.info(f"处理进度: {progress:.1f}%")
 
                 # 兜底策略：若整篇未提取到任何文本，逐页以高分辨率直接OCR一次
                 if not any((t.get('text') or '').strip() for t in all_texts):
@@ -404,46 +391,18 @@ class PDFProcessor:
                     'tags': []
                 }
             
-            # 使用LLM生成各种类型的内容（若不可用则返回占位）
-            if self.llm_processor:
-                summary = self.llm_processor.generate_summary(all_text)
-                keywords = self.llm_processor.extract_keywords(all_text)
-                hybrid_summary = self.llm_processor.generate_hybrid_summary(all_text)
-                markdown_content = self.llm_processor.convert_to_markdown(all_text)
-            else:
-                summary = ''
-                keywords = []
-                hybrid_summary = ''
-                markdown_content = ''
+            # 服务端禁用LLM：直接返回占位，避免任何阻塞
+            summary = ''
+            keywords = []
+            hybrid_summary = ''
+            markdown_content = ''
             
-            # 分类与打标签
-            try:
-                if self.llm_processor:
-                    categories = self.llm_processor.classify(all_text)
-                    tags = self.llm_processor.generate_tags(all_text)
-                else:
-                    categories = {"categories": [], "confidence": 0.0}
-                    tags = []
-            except Exception as e:
-                logger.warning(f"分类/打标签阶段异常: {e}")
-                categories = {"categories": [], "confidence": 0.0}
-                tags = []
+            # 分类与打标签（服务端跳过，由客户端处理）
+            categories = {"categories": [], "confidence": 0.0}
+            tags = []
             
-            # 生成段落摘要
+            # 段落摘要（服务端跳过）
             part_summaries = []
-            try:
-                # 将文本分段处理
-                paragraphs = [p.strip() for p in all_text.split('\n\n') if p.strip()]
-                for i, paragraph in enumerate(paragraphs[:5]):  # 只处理前5段
-                    if len(paragraph) > 100:  # 只对较长的段落生成摘要
-                        part_summary = self.llm_processor.generate_summary(paragraph) if self.llm_processor else ''
-                        part_summaries.append({
-                            'paragraph_index': i + 1,
-                            'original_length': len(paragraph),
-                            'summary': part_summary
-                        })
-            except Exception as e:
-                logger.warning(f"生成段落摘要失败: {e}")
             
             return {
                 'summary': summary,

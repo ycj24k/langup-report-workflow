@@ -23,20 +23,25 @@ class RemoteOCRClient:
         self.server_url = server_url.rstrip('/')
         self.session = requests.Session()
         self.session.timeout = 300  # 5分钟超时
+        # 设置连接池，避免每次建立新连接
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=10,
+            pool_maxsize=10,
+            max_retries=1
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
         
     def check_server_health(self) -> bool:
-        """检查服务器健康状态"""
+        """检查服务器健康状态 - 快速检查"""
         try:
-            response = self.session.get(f"{self.server_url}/health")
+            # 使用短超时进行快速健康检查
+            response = self.session.get(f"{self.server_url}/health", timeout=2)
             if response.status_code == 200:
-                data = response.json()
-                logger.info(f"远程OCR服务器健康检查通过: {data}")
                 return True
             else:
-                logger.error(f"远程OCR服务器健康检查失败: {response.status_code}")
                 return False
-        except Exception as e:
-            logger.error(f"无法连接到远程OCR服务器: {e}")
+        except Exception:
             return False
     
     def process_pdf(self, pdf_path: str, filename: str) -> Dict:
