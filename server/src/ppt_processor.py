@@ -42,7 +42,8 @@ class PPTProcessor:
         """
         初始化PPT处理器
         """
-        self.llm_processor = LLMProcessor() if LLMProcessor else None
+        # 服务端不初始化LLM处理器，避免不必要的模型加载
+        self.llm_processor = None
         self.ocr_engine = ocr_engine
         self.supported_formats = []
         

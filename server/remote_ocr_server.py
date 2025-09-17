@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import uvicorn
 from loguru import logger
+from starlette.concurrency import run_in_threadpool
 
 # 添加src路径
 sys.path.append('src')
@@ -58,17 +60,6 @@ def _probe_gpu_info():
         info["opencv"]["error"] = str(e)
     return info
 
-app = FastAPI(title="远程GPU OCR服务", version="1.0.0")
-
-# 添加CORS中间件
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # 全局变量（兼容旧逻辑），同时使用 app.state 保存，确保在各 worker/路由共享
 pdf_processor = None
 ppt_processor = None
@@ -101,9 +92,10 @@ def _warmup_once():
     except Exception as e:
         logger.warning(f"warmup 失败（不影响服务可用）: {e}")
 
-@app.on_event("startup")
-async def startup_event():
-    """启动时初始化OCR组件（只执行一次）"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    # 启动时初始化OCR组件（只执行一次）
     global pdf_processor, ppt_processor, ocr_engine, office_processor
     
     try:
@@ -142,6 +134,23 @@ async def startup_event():
     except Exception as e:
         logger.error(f"OCR服务初始化失败: {e}")
         raise
+    
+    yield
+    
+    # 关闭时清理资源
+    logger.info("正在关闭OCR服务...")
+
+app = FastAPI(title="远程GPU OCR服务", version="1.0.0", lifespan=lifespan)
+
+# 添加CORS中间件
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/")
 async def root():
@@ -175,9 +184,9 @@ async def process_pdf(file: UploadFile = File(...)):
             tmp_file_path = tmp_file.name
         
         try:
-            # 处理PDF
+            # 处理PDF（放入线程池，避免阻塞事件循环，从而不影响/health等轻量请求）
             logger.info(f"开始处理PDF: {file.filename}")
-            result = proc.process_pdf(tmp_file_path, file.filename)
+            result = await run_in_threadpool(lambda: proc.process_pdf(tmp_file_path, file.filename))
             
             # 清理临时文件
             os.unlink(tmp_file_path)
@@ -221,9 +230,9 @@ async def process_ppt(file: UploadFile = File(...)):
             tmp_file_path = tmp_file.name
         
         try:
-            # 处理PPT
+            # 处理PPT（放入线程池，避免阻塞事件循环）
             logger.info(f"开始处理PPT: {file.filename}")
-            result = proc.process_ppt(tmp_file_path, file.filename)
+            result = await run_in_threadpool(lambda: proc.process_ppt(tmp_file_path, file.filename))
             
             # 清理临时文件
             os.unlink(tmp_file_path)
@@ -275,7 +284,8 @@ async def process_office(file: UploadFile = File(...)):
             proc = getattr(app.state, "office_processor", None) or office_processor
             if not proc:
                 raise HTTPException(status_code=500, detail="Office处理器未初始化")
-            result = proc.process_office_document(tmp_file_path, file.filename)
+            # 放入线程池，保持/health可用
+            result = await run_in_threadpool(lambda: proc.process_office_document(tmp_file_path, file.filename))
             
             if result.get('status') == 'success':
                 logger.info(f"Office文档处理成功: {file.filename}")
@@ -312,9 +322,9 @@ async def process_image(file: UploadFile = File(...)):
             tmp_file_path = tmp_file.name
         
         try:
-            # 处理图片
+            # 处理图片（放入线程池，避免阻塞事件循环）
             logger.info(f"开始处理图片: {file.filename}")
-            result = engine.extract_text_direct(tmp_file_path)
+            result = await run_in_threadpool(lambda: engine.extract_text_direct(tmp_file_path))
             
             # 清理临时文件
             os.unlink(tmp_file_path)
@@ -363,9 +373,10 @@ if __name__ == "__main__":
     
     # 启动服务
     uvicorn.run(
-        app,
+        "remote_ocr_server:app",  # 使用字符串导入，支持workers参数
         host="0.0.0.0",  # 允许外部访问
         port=8888,
         reload=False,
-        log_level="info"
+        log_level="info",
+        workers=2  # 增加并发worker，确保长任务期间健康检查可用
     )

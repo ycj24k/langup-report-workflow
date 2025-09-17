@@ -882,11 +882,16 @@ class ResearchFileGUI:
             # 只在有运行中的任务时才更新
             if hasattr(self, 'file_scanner') and self.file_scanner:
                 stats = self.file_scanner.get_ocr_progress()
-                if stats['running'] > 0 or stats['total_tasks'] > 0:
+                # 只有在有运行中的任务时才继续更新，避免闪烁
+                if stats['running'] > 0:
                     self.update_ocr_progress()
-        finally:
-            # 5秒后再次更新（进一步减少频率，避免闪烁）
-            self.root.after(5000, self._schedule_ocr_progress_update)
+                    # 有运行任务时，5秒后再次更新
+                    self.root.after(5000, self._schedule_ocr_progress_update)
+                else:
+                    # 没有运行任务时，停止更新
+                    self._hide_progress_if_done()
+        except Exception as e:
+            print(f"进度更新调度失败: {e}")
     
     def update_ocr_progress(self):
         """更新OCR进度显示"""
@@ -939,9 +944,9 @@ class ResearchFileGUI:
                     
                     self.ocr_progress_label.config(text=base_text)
                     
-                    # 如果所有任务完成，延迟隐藏进度条
+                    # 如果所有任务完成，立即隐藏进度条
                     if running_count == 0 and total_tasks > 0:
-                        self.root.after(3000, self._hide_progress_if_done)
+                        self._hide_progress_if_done()
                         
                 else:
                     self.ocr_progress_bar['value'] = 0
@@ -956,14 +961,9 @@ class ResearchFileGUI:
             if hasattr(self, 'file_scanner') and self.file_scanner:
                 stats = self.file_scanner.get_ocr_progress()
                 if stats['running'] == 0 and stats['total_tasks'] > 0:
-                    # 显示最终结果2秒
-                    final_text = f"OCR完成: {stats['completed']}/{stats['total_tasks']}"
-                    if stats['failed'] > 0:
-                        final_text += f" (失败: {stats['failed']})"
-                    self.ocr_progress_label.config(text=final_text)
-                    
-                    # 2秒后清空
-                    self.root.after(2000, lambda: self.ocr_progress_label.config(text=""))
+                    # 任务完成后立即清空进度显示，避免闪烁
+                    self.ocr_progress_label.config(text="")
+                    self.ocr_progress_bar['value'] = 0
         except:
             pass
 
@@ -1250,10 +1250,8 @@ class ResearchFileGUI:
                 if task:
                     # 只在任务完成或失败时显示状态信息
                     if task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
-                        if task.status == TaskStatus.COMPLETED:
-                            print(f"✅ OCR完成: {os.path.basename(task.file_path)}")
-                        else:
-                            print(f"❌ OCR失败: {os.path.basename(task.file_path)} - {task.error}")
+                        # 不输出OCR结果到控制台，只更新GUI状态
+                        pass
                         
                         # 更新文件树显示
                         self._update_file_tree_after_ocr(task)
@@ -1288,7 +1286,7 @@ class ResearchFileGUI:
                             current_values[9] = parsing_status  # 解析状态列
                             self.file_tree.item(item, values=tuple(current_values))
                             updated = True
-                            print(f"✅ 文件树已更新: {target_name} -> {parsing_status}")
+                            # 文件树已更新，不输出到控制台
                         break
             
             if not updated:
